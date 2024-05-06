@@ -4,11 +4,11 @@
 
 ## Change log
 
-- Using [Fingerprint](https://github.com/Tack-Tau/fplib3/) vectors as atomic features
+- Using [Fingerprint](https://github.com/Tack-Tau/fplib3/) (FP) vectors as atomic features
 - Switch reading pymatgen structures from CIF to POSCAR
 - Add `drop_last` in `torch.utils.data.DataLoader`
 - Take data imbalance into account for classification job
-- TBD
+- Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
 
 This software is based on the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
 
@@ -87,7 +87,7 @@ python3 train.py -h
 ```
 or alternatively
 
-Following is a domo of how to use `train.py`
+Following is a demo of how to use `train.py`
 
 ```bash
 python3 train.py --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir | tee FpGNN_log.txt
