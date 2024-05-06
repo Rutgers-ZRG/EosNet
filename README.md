@@ -21,73 +21,6 @@ The following paper describes the details of the CGCNN framework:
 
 [Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties](https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)
 
-
-## How to cite
-
-Please cite the following work if you want to use FpCNN.
-
-```
-@article{PhysRevLett.120.145301,
-  title = {Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties},
-  author = {Xie, Tian and Grossman, Jeffrey C.},
-  journal = {Phys. Rev. Lett.},
-  volume = {120},
-  issue = {14},
-  pages = {145301},
-  numpages = {6},
-  year = {2018},
-  month = {Apr},
-  publisher = {American Physical Society},
-  doi = {10.1103/PhysRevLett.120.145301},
-  url = {https://link.aps.org/doi/10.1103/PhysRevLett.120.145301}
-}
-```
-
-```
-@article{taoAcceleratingStructuralOptimization2024,
-  title = {Accelerating Structural Optimization through Fingerprinting Space Integration on the Potential Energy Surface},
-  author = {Tao, Shuo and Shao, Xuecheng and Zhu, Li},
-  year = {2024},
-  month = mar,
-  journal = {J. Phys. Chem. Lett.},
-  volume = {15},
-  number = {11},
-  pages = {3185--3190},
-  doi = {10.1021/acs.jpclett.4c00275},
-  url = {https://pubs.acs.org/doi/10.1021/acs.jpclett.4c00275}
-}
-```
-
-```
-@article{zhuFingerprintBasedMetric2016,
-  title = {A Fingerprint Based Metric for Measuring Similarities of Crystalline Structures},
-  author = {Zhu, Li and Amsler, Maximilian and Fuhrer, Tobias and Schaefer, Bastian and Faraji, Somayeh and Rostami, Samare and Ghasemi, S. Alireza and Sadeghi, Ali and Grauzinyte, Migle and Wolverton, Chris and Goedecker, Stefan},
-  year = {2016},
-  month = jan,
-  journal = {The Journal of Chemical Physics},
-  volume = {144},
-  number = {3},
-  pages = {034203},
-  doi = {10.1063/1.4940026},
-  url = {https://doi.org/10.1063/1.4940026}
-}
-```
-
-```
-@article{sadeghiMetricsMeasuringDistances2013,
-  title = {Metrics for Measuring Distances in Configuration Spaces},
-  author = {Sadeghi, Ali and Ghasemi, S. Alireza and Schaefer, Bastian and Mohr, Stephan and Lill, Markus A. and Goedecker, Stefan},
-  year = {2013},
-  month = nov,
-  journal = {The Journal of Chemical Physics},
-  volume = {139},
-  number = {18},
-  pages = {184118},
-  doi = {10.1063/1.4828704},
-  url = {https://pubs.aip.org/aip/jcp/article/317391}
-}
-```
-
 ##  Dependencies
 
 This package requires:
@@ -180,4 +113,68 @@ In directory `FpGNN`, you can predict the properties of the crystals in `root_di
 python predict.py pre-trained.pth.tar root_dir
 ```
 
+## How to cite
 
+Please cite the following work if you want to use FpCNN.
+
+```
+@article{PhysRevLett.120.145301,
+  title = {Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties},
+  author = {Xie, Tian and Grossman, Jeffrey C.},
+  journal = {Phys. Rev. Lett.},
+  volume = {120},
+  issue = {14},
+  pages = {145301},
+  numpages = {6},
+  year = {2018},
+  month = {Apr},
+  publisher = {American Physical Society},
+  doi = {10.1103/PhysRevLett.120.145301},
+  url = {https://link.aps.org/doi/10.1103/PhysRevLett.120.145301}
+}
+```
+
+```
+@article{taoAcceleratingStructuralOptimization2024,
+  title = {Accelerating Structural Optimization through Fingerprinting Space Integration on the Potential Energy Surface},
+  author = {Tao, Shuo and Shao, Xuecheng and Zhu, Li},
+  year = {2024},
+  month = mar,
+  journal = {J. Phys. Chem. Lett.},
+  volume = {15},
+  number = {11},
+  pages = {3185--3190},
+  doi = {10.1021/acs.jpclett.4c00275},
+  url = {https://pubs.acs.org/doi/10.1021/acs.jpclett.4c00275}
+}
+```
+
+```
+@article{zhuFingerprintBasedMetric2016,
+  title = {A Fingerprint Based Metric for Measuring Similarities of Crystalline Structures},
+  author = {Zhu, Li and Amsler, Maximilian and Fuhrer, Tobias and Schaefer, Bastian and Faraji, Somayeh and Rostami, Samare and Ghasemi, S. Alireza and Sadeghi, Ali and Grauzinyte, Migle and Wolverton, Chris and Goedecker, Stefan},
+  year = {2016},
+  month = jan,
+  journal = {The Journal of Chemical Physics},
+  volume = {144},
+  number = {3},
+  pages = {034203},
+  doi = {10.1063/1.4940026},
+  url = {https://doi.org/10.1063/1.4940026}
+}
+```
+
+```
+@article{sadeghiMetricsMeasuringDistances2013,
+  title = {Metrics for Measuring Distances in Configuration Spaces},
+  author = {Sadeghi, Ali and Ghasemi, S. Alireza and Schaefer, Bastian and Mohr, Stephan and Lill, Markus A. and Goedecker, Stefan},
+  year = {2013},
+  month = nov,
+  journal = {The Journal of Chemical Physics},
+  volume = {139},
+  number = {18},
+  pages = {184118},
+  doi = {10.1063/1.4828704},
+  url = {https://pubs.aip.org/aip/jcp/article/317391}
+}
+```
