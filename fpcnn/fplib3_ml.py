@@ -7,119 +7,119 @@ from scipy.optimize import linear_sum_assignment
 def get_rcovdata():
     dat = \
     [[ 0  , "X" , 1.0],
-    [ 1  , "H"  , 0.37],  
-    [ 2  , "He" , 0.32],  
-    [ 3  , "Li" , 1.34],  
-    [ 4  , "Be" , 0.90],  
-    [ 5  , "B"  , 0.82],  
-    [ 6  , "C"  , 0.77],  
-    [ 7  , "N"  , 0.75],  
-    [ 8  , "O"  , 0.73],  
-    [ 9  , "F"  , 0.71],  
-    [ 10 , "Ne" , 0.69],  
-    [ 11 , "Na" , 1.54],  
-    [ 12 , "Mg" , 1.30],  
-    [ 13 , "Al" , 1.18],  
-    [ 14 , "Si" , 1.11],  
-    [ 15 , "P"  , 1.06],  
-    [ 16 , "S"  , 1.02],  
-    [ 17 , "Cl" , 0.99],  
-    [ 18 , "Ar" , 0.97],  
-    [ 19 , "K"  , 1.96],  
-    [ 20 , "Ca" , 1.74],  
-    [ 21 , "Sc" , 1.44],  
-    [ 22 , "Ti" , 1.36],  
-    [ 23 , "V"  , 1.25],  
-    [ 24 , "Cr" , 1.27],  
-    [ 25 , "Mn" , 1.39],  
-    [ 26 , "Fe" , 1.25],  
-    [ 27 , "Co" , 1.26],  
-    [ 28 , "Ni" , 1.21],  
-    [ 29 , "Cu" , 1.38],  
-    [ 30 , "Zn" , 1.31],  
-    [ 31 , "Ga" , 1.26],  
-    [ 32 , "Ge" , 1.22],  
-    [ 33 , "As" , 1.19],  
-    [ 34 , "Se" , 1.16],  
-    [ 35 , "Br" , 1.14],  
-    [ 36 , "Kr" , 1.10],  
-    [ 37 , "Rb" , 2.11],  
-    [ 38 , "Sr" , 1.92],  
-    [ 39 , "Y"  , 1.62],  
-    [ 40 , "Zr" , 1.48],  
-    [ 41 , "Nb" , 1.37],  
-    [ 42 , "Mo" , 1.45],  
-    [ 43 , "Tc" , 1.56],  
-    [ 44 , "Ru" , 1.26],  
-    [ 45 , "Rh" , 1.35],  
-    [ 46 , "Pd" , 1.31],  
-    [ 47 , "Ag" , 1.53],  
-    [ 48 , "Cd" , 1.48],  
-    [ 49 , "In" , 1.44],  
-    [ 50 , "Sn" , 1.41],  
-    [ 51 , "Sb" , 1.38],  
-    [ 52 , "Te" , 1.35],  
-    [ 53 , "I"  , 1.33],  
-    [ 54 , "Xe" , 1.30],  
-    [ 55 , "Cs" , 2.25],  
-    [ 56 , "Ba" , 1.98],  
-    [ 57 , "La" , 1.80],  
-    [ 58 , "Ce" , 1.63],  
-    [ 59 , "Pr" , 1.76],  
-    [ 60 , "Nd" , 1.74],  
-    [ 61 , "Pm" , 1.73],  
-    [ 62 , "Sm" , 1.72],  
-    [ 63 , "Eu" , 1.68],  
-    [ 64 , "Gd" , 1.69],  
-    [ 56 , "Tb" , 1.68],  
-    [ 66 , "Dy" , 1.67],  
-    [ 67 , "Ho" , 1.66],  
-    [ 68 , "Er" , 1.65],  
-    [ 69 , "Tm" , 1.64],  
-    [ 70 , "Yb" , 1.70],  
-    [ 71 , "Lu" , 1.60],  
-    [ 72 , "Hf" , 1.50],  
-    [ 73 , "Ta" , 1.38],  
-    [ 74 , "W"  , 1.46],  
-    [ 75 , "Re" , 1.59],  
-    [ 76 , "Os" , 1.28],  
-    [ 77 , "Ir" , 1.37],  
-    [ 78 , "Pt" , 1.28],  
-    [ 79 , "Au" , 1.44],  
-    [ 80 , "Hg" , 1.49],  
-    [ 81 , "Tl" , 1.48],  
-    [ 82 , "Pb" , 1.47],  
-    [ 83 , "Bi" , 1.46],  
-    [ 84 , "Po" , 1.45],  
-    [ 85 , "At" , 1.47],  
-    [ 86 , "Rn" , 1.42],  
-    [ 87 , "Fr" , 2.23],  
-    [ 88 , "Ra" , 2.01],  
-    [ 89 , "Ac" , 1.86],  
-    [ 90 , "Th" , 1.75],  
-    [ 91 , "Pa" , 1.69],  
-    [ 92 , "U"  , 1.70],  
-    [ 93 , "Np" , 1.71],  
-    [ 94 , "Pu" , 1.72],  
-    [ 95 , "Am" , 1.66],  
-    [ 96 , "Cm" , 1.66],  
-    [ 97 , "Bk" , 1.68],  
-    [ 98 , "Cf" , 1.68],  
-    [ 99 , "Es" , 1.65],  
-    [ 100, "Fm" , 1.67],  
-    [ 101, "Md" , 1.73],  
-    [ 102, "No" , 1.76],  
-    [ 103, "Lr" , 1.61],  
-    [ 104, "Rf" , 1.57],  
-    [ 105, "Db" , 1.49],  
-    [ 106, "Sg" , 1.43],  
-    [ 107, "Bh" , 1.41],  
-    [ 108, "Hs" , 1.34],  
-    [ 109, "Mt" , 1.29],  
-    [ 110, "Ds" , 1.28],  
-    [ 111, "Rg" , 1.21],  
+    [ 1  , "H"  , 0.37],
+    [ 2  , "He" , 0.32],
+    [ 3  , "Li" , 1.34],
+    [ 4  , "Be" , 0.90],
+    [ 5  , "B"  , 0.82],
+    [ 6  , "C"  , 0.77],
+    [ 7  , "N"  , 0.75],
+    [ 8  , "O"  , 0.73],
+    [ 9  , "F"  , 0.71],
+    [ 10 , "Ne" , 0.69],
+    [ 11 , "Na" , 1.54],
+    [ 12 , "Mg" , 1.30],
+    [ 13 , "Al" , 1.18],
+    [ 14 , "Si" , 1.11],
+    [ 15 , "P"  , 1.06],
+    [ 16 , "S"  , 1.02],
+    [ 17 , "Cl" , 0.99],
+    [ 18 , "Ar" , 0.97],
+    [ 19 , "K"  , 1.96],
+    [ 20 , "Ca" , 1.74],
+    [ 21 , "Sc" , 1.44],
+    [ 22 , "Ti" , 1.36],
+    [ 23 , "V"  , 1.25],
+    [ 24 , "Cr" , 1.27],
+    [ 25 , "Mn" , 1.39],
+    [ 26 , "Fe" , 1.25],
+    [ 27 , "Co" , 1.26],
+    [ 28 , "Ni" , 1.21],
+    [ 29 , "Cu" , 1.38],
+    [ 30 , "Zn" , 1.31],
+    [ 31 , "Ga" , 1.26],
+    [ 32 , "Ge" , 1.22],
+    [ 33 , "As" , 1.19],
+    [ 34 , "Se" , 1.16],
+    [ 35 , "Br" , 1.14],
+    [ 36 , "Kr" , 1.10],
+    [ 37 , "Rb" , 2.11],
+    [ 38 , "Sr" , 1.92],
+    [ 39 , "Y"  , 1.62],
+    [ 40 , "Zr" , 1.48],
+    [ 41 , "Nb" , 1.37],
+    [ 42 , "Mo" , 1.45],
+    [ 43 , "Tc" , 1.56],
+    [ 44 , "Ru" , 1.26],
+    [ 45 , "Rh" , 1.35],
+    [ 46 , "Pd" , 1.31],
+    [ 47 , "Ag" , 1.53],
+    [ 48 , "Cd" , 1.48],
+    [ 49 , "In" , 1.44],
+    [ 50 , "Sn" , 1.41],
+    [ 51 , "Sb" , 1.38],
+    [ 52 , "Te" , 1.35],
+    [ 53 , "I"  , 1.33],
+    [ 54 , "Xe" , 1.30],
+    [ 55 , "Cs" , 2.25],
+    [ 56 , "Ba" , 1.98],
+    [ 57 , "La" , 1.80],
+    [ 58 , "Ce" , 1.63],
+    [ 59 , "Pr" , 1.76],
+    [ 60 , "Nd" , 1.74],
+    [ 61 , "Pm" , 1.73],
+    [ 62 , "Sm" , 1.72],
+    [ 63 , "Eu" , 1.68],
+    [ 64 , "Gd" , 1.69],
+    [ 56 , "Tb" , 1.68],
+    [ 66 , "Dy" , 1.67],
+    [ 67 , "Ho" , 1.66],
+    [ 68 , "Er" , 1.65],
+    [ 69 , "Tm" , 1.64],
+    [ 70 , "Yb" , 1.70],
+    [ 71 , "Lu" , 1.60],
+    [ 72 , "Hf" , 1.50],
+    [ 73 , "Ta" , 1.38],
+    [ 74 , "W"  , 1.46],
+    [ 75 , "Re" , 1.59],
+    [ 76 , "Os" , 1.28],
+    [ 77 , "Ir" , 1.37],
+    [ 78 , "Pt" , 1.28],
+    [ 79 , "Au" , 1.44],
+    [ 80 , "Hg" , 1.49],
+    [ 81 , "Tl" , 1.48],
+    [ 82 , "Pb" , 1.47],
+    [ 83 , "Bi" , 1.46],
+    [ 84 , "Po" , 1.45],
+    [ 85 , "At" , 1.47],
+    [ 86 , "Rn" , 1.42],
+    [ 87 , "Fr" , 2.23],
+    [ 88 , "Ra" , 2.01],
+    [ 89 , "Ac" , 1.86],
+    [ 90 , "Th" , 1.75],
+    [ 91 , "Pa" , 1.69],
+    [ 92 , "U"  , 1.70],
+    [ 93 , "Np" , 1.71],
+    [ 94 , "Pu" , 1.72],
+    [ 95 , "Am" , 1.66],
+    [ 96 , "Cm" , 1.66],
+    [ 97 , "Bk" , 1.68],
+    [ 98 , "Cf" , 1.68],
+    [ 99 , "Es" , 1.65],
+    [ 100, "Fm" , 1.67],
+    [ 101, "Md" , 1.73],
+    [ 102, "No" , 1.76],
+    [ 103, "Lr" , 1.61],
+    [ 104, "Rf" , 1.57],
+    [ 105, "Db" , 1.49],
+    [ 106, "Sg" , 1.43],
+    [ 107, "Bh" , 1.41],
+    [ 108, "Hs" , 1.34],
+    [ 109, "Mt" , 1.29],
+    [ 110, "Ds" , 1.28],
+    [ 111, "Rg" , 1.21],
     [ 112, "Cn" , 1.22]]
-    
+
     return dat
 
 @jit('(float64)(int32, int32)', nopython=True)
@@ -163,7 +163,7 @@ def readvasp(vp):
         for line in f:
             buff.append(line.split())
 
-    lat = np.array(buff[2:5], float) 
+    lat = np.array(buff[2:5], float)
     try:
         typt = np.array(buff[5], int)
     except:
@@ -201,7 +201,7 @@ def read_types(vp):
 @jit(nopython=True)
 def get_gom(lseg, rxyz, alpha, amp):
     # s orbital only lseg == 1
-    nat = len(rxyz)    
+    nat = len(rxyz)
     if lseg == 1:
         om = np.zeros((nat, nat), dtype = np.float64)
         mamp = np.zeros((nat, nat), dtype = np.float64)
@@ -224,26 +224,26 @@ def get_gom(lseg, rxyz, alpha, amp):
                 d2 = np.vdot(d, d)
                 t1 = alpha[iat] * alpha[jat]
                 t2 = alpha[iat] + alpha[jat]
-                
+
                 # <s_i | s_j>
                 sij = np.sqrt(2.0*np.sqrt(t1)/t2)**3 * np.exp(-t1/t2*d2)
                 om[4*iat][4*jat] = sij
                 mamp[4*iat][4*jat] = amp[iat]*amp[jat]
-                
+
                 # <s_i | p_j>
                 stv = 2.0 * (1/np.sqrt(alpha[jat])) * (t1/t2) * sij
-                om[4*iat][4*jat+1] = stv * d[0] 
-                om[4*iat][4*jat+2] = stv * d[1] 
-                om[4*iat][4*jat+3] = stv * d[2]  
-                
+                om[4*iat][4*jat+1] = stv * d[0]
+                om[4*iat][4*jat+2] = stv * d[1]
+                om[4*iat][4*jat+3] = stv * d[2]
+
                 mamp[4*iat][4*jat+1] = amp[iat]*amp[jat]
                 mamp[4*iat][4*jat+2] = amp[iat]*amp[jat]
                 mamp[4*iat][4*jat+3] = amp[iat]*amp[jat]
-                # <p_i | s_j> 
+                # <p_i | s_j>
                 stv = -2.0 * (1/np.sqrt(alpha[iat])) * (t1/t2) * sij
-                om[4*iat+1][4*jat] = stv * d[0] 
-                om[4*iat+2][4*jat] = stv * d[1] 
-                om[4*iat+3][4*jat] = stv * d[2] 
+                om[4*iat+1][4*jat] = stv * d[0]
+                om[4*iat+2][4*jat] = stv * d[1]
+                om[4*iat+3][4*jat] = stv * d[2]
 
                 mamp[4*iat+1][4*jat] = amp[iat]*amp[jat]
                 mamp[4*iat+2][4*jat] = amp[iat]*amp[jat]
@@ -253,51 +253,22 @@ def get_gom(lseg, rxyz, alpha, amp):
                 # stv = -8.0 * rcov[iat] * rcov[jat] * r * r * sji
                 stv = 2.0 * np.sqrt(t1)/t2 * sij
                 sx = -2.0*t1/t2
-                
+
                 for i_pp in range(3):
                     for j_pp in range(3):
                         om[4*iat+i_pp+1][4*jat+j_pp+1] = stv * (sx * d[i_pp] * d[j_pp] + \
                                                                 kron_delta(i_pp, j_pp))
-                
+
                 for i_pp in range(3):
                     for j_pp in range(3):
                         mamp[4*iat+i_pp+1][4*jat+j_pp+1] = amp[iat]*amp[jat]
-                
-                '''
-                om[4*iat+1][4*jat+1] = stv * (sx * d[0] * d[0] + 1.0) 
-                om[4*iat+1][4*jat+2] = stv * (sx * d[1] * d[0]      ) 
-                om[4*iat+1][4*jat+3] = stv * (sx * d[2] * d[0]      ) 
-                om[4*iat+2][4*jat+1] = stv * (sx * d[0] * d[1]      ) 
-                om[4*iat+2][4*jat+2] = stv * (sx * d[1] * d[1] + 1.0) 
-                om[4*iat+2][4*jat+3] = stv * (sx * d[2] * d[1]      ) 
-                om[4*iat+3][4*jat+1] = stv * (sx * d[0] * d[2]      ) 
-                om[4*iat+3][4*jat+2] = stv * (sx * d[1] * d[2]      ) 
-                om[4*iat+3][4*jat+3] = stv * (sx * d[2] * d[2] + 1.0) 
-
-                mamp[4*iat+1][4*jat+1] = amp[iat]*amp[jat]
-                mamp[4*iat+1][4*jat+2] = amp[iat]*amp[jat]
-                mamp[4*iat+1][4*jat+3] = amp[iat]*amp[jat]
-                mamp[4*iat+2][4*jat+1] = amp[iat]*amp[jat]
-                mamp[4*iat+2][4*jat+2] = amp[iat]*amp[jat]
-                mamp[4*iat+2][4*jat+3] = amp[iat]*amp[jat]
-                mamp[4*iat+3][4*jat+1] = amp[iat]*amp[jat]
-                mamp[4*iat+3][4*jat+2] = amp[iat]*amp[jat]
-                mamp[4*iat+3][4*jat+3] = amp[iat]*amp[jat]
-                '''
-    
-    '''
-    if check_symmetric(om*mamp) and check_pos_def(om*mamp):
-        return om, mamp
-    else:
-        raise Exception("Gaussian Overlap Matrix is not symmetric and positive definite!")
-    '''
     return (om, mamp)
 
 # @jit('(float64[:,:,:,:])(int32, float64[:,:], float64[:], \
 #       float64[:], float64[:,:], float64[:], int32)', nopython=True)
 @jit(nopython=True)
 def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
-    nat = len(rxyz)    
+    nat = len(rxyz)
     if lseg == 1:
         # s orbital only lseg == 1
         di = np.empty(3, dtype = np.float64)
@@ -313,16 +284,16 @@ def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
                 tt = 2.0 * t1 / t2
                 dic = rxyz[iat] - rxyz[icenter]
                 djc = rxyz[jat] - rxyz[icenter]
-                
+
                 pij = amp[iat] * amp[jat]
                 dipj = damp[iat] * amp[jat]
                 djpi = damp[jat] * amp[iat]
-                
+
                 for k in range(3):
                     di[k] = -pij * tt * gom[iat][jat] * d[k] + dipj * gom[iat][jat] * dic[k]
                     dj[k] = +pij * tt * gom[iat][jat] * d[k] + djpi * gom[iat][jat] * djc[k]
                     dc[k] = -dipj * gom[iat][jat] * dic[k] - djpi * gom[iat][jat] * djc[k]
-                    
+
                     dgom[iat][k][iat][jat] += di[k]
                     dgom[jat][k][iat][jat] += dj[k]
                     dgom[icenter][k][iat][jat] += dc[k]
@@ -350,11 +321,11 @@ def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
                 tt = 2.0 * t1 / t2
                 dic = rxyz[iat] - rxyz[icenter]
                 djc = rxyz[jat] - rxyz[icenter]
-                
+
                 pij = amp[iat] * amp[jat]
                 dipj = damp[iat] * amp[jat]
                 djpi = damp[jat] * amp[iat]
-                
+
                 # <s_i | s_j>
                 for k_ss in range(3):
                     dss_i[k_ss] = -pij * tt * gom[4*iat][4*jat] * d[k_ss] + dipj * \
@@ -363,11 +334,11 @@ def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
                     gom[4*iat][4*jat] * djc[k_ss]
                     dss_c[k_ss] = -dipj * gom[4*iat][4*jat] * dic[k_ss] - djpi * \
                     gom[4*iat][4*jat] * djc[k_ss]
-                    
+
                     dgom[iat][k_ss][4*iat][4*jat] += dss_i[k_ss]
                     dgom[jat][k_ss][4*iat][4*jat] += dss_j[k_ss]
                     dgom[icenter][k_ss][4*iat][4*jat] += dss_c[k_ss]
-                
+
                 # <s_i | p_j>
                 for k_sp in range(3):
                     for i_sp in range(3):
@@ -376,20 +347,20 @@ def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
                         (1/np.sqrt(alpha[jat]))* pij * tt ** 2 * \
                         np.multiply(d[k_sp], d[i_sp]) * gom[4*iat][4*jat] + \
                         dipj * gom[4*iat][4*jat+i_sp+1] * dic[k_sp]
-                        
+
                         dsp_j[k_sp][i_sp] = -(1/np.sqrt(alpha[jat])) * pij * tt * \
                         kron_delta(k_sp, i_sp) * gom[4*iat][4*jat] + \
                         (1/np.sqrt(alpha[jat]))* pij * tt ** 2 * \
                         np.multiply(d[k_sp], d[i_sp]) * gom[4*iat][4*jat] + \
                         djpi * gom[4*iat][4*jat+i_sp+1] * djc[k_sp]
-                        
+
                         dsp_c[k_sp][i_sp] = -dipj * gom[4*iat][4*jat+i_sp+1] * dic[k_sp] - \
                         djpi * gom[4*iat][4*jat+i_sp+1] * djc[k_sp]
-                        
+
                         dgom[iat][k_sp][4*iat][4*jat+i_sp+1] += dsp_i[k_sp][i_sp]
                         dgom[jat][k_sp][4*iat][4*jat+i_sp+1] += dsp_j[k_sp][i_sp]
                         dgom[icenter][k_sp][4*iat][4*jat+i_sp+1] += dsp_c[k_sp][i_sp]
-                
+
                 # <p_i | s_j>
                 for k_ps in range(3):
                     for i_ps in range(3):
@@ -398,20 +369,20 @@ def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
                         (1/np.sqrt(alpha[iat]))* pij * tt ** 2 * \
                         np.multiply(d[k_ps], d[i_ps]) * gom[4*iat][4*jat] + \
                         dipj * gom[4*iat+i_ps+1][4*jat] * dic[k_ps]
-                        
+
                         dps_j[k_ps][i_ps] = +(1/np.sqrt(alpha[iat])) * pij * tt * \
                         kron_delta(k_ps, i_ps) * gom[4*iat][4*jat] - \
                         (1/np.sqrt(alpha[iat]))* pij * tt ** 2 * \
                         np.multiply(d[k_ps], d[i_ps]) * gom[4*iat][4*jat] + \
                         djpi * gom[4*iat+i_ps+1][4*jat] * djc[k_ps]
-                        
+
                         dps_c[k_ps][i_ps] = -dipj * gom[4*iat+i_ps+1][4*jat] * dic[k_ps] - \
                         djpi * gom[4*iat+i_ps+1][4*jat] * djc[k_ps]
-                        
+
                         dgom[iat][k_ps][4*iat+i_ps+1][4*jat] += dps_i[k_ps][i_ps]
                         dgom[jat][k_ps][4*iat+i_ps+1][4*jat] += dps_j[k_ps][i_ps]
                         dgom[icenter][k_ps][4*iat+i_ps+1][4*jat] += dps_c[k_ps][i_ps]
-                
+
                 # <p_i | p_j>
                 for k_pp in range(3):
                     for i_pp in range(3):
@@ -439,8 +410,8 @@ def get_dgom(lseg, gom, amp, damp, rxyz, alpha, icenter):
                             dgom[jat][k_pp][4*iat+i_pp+1][4*jat+j_pp+1] += dpp_j[k_pp][i_pp][j_pp]
                             dgom[icenter][k_pp][4*iat+i_pp+1][4*jat+j_pp+1] += \
                                                                            dpp_c[k_pp][i_pp][j_pp]
-                
-                
+
+
     return dgom
 
 # @jit('(float64[:])(float64[:,:], int32[:])', nopython=True)
@@ -478,7 +449,7 @@ def get_fp(lat, rxyz, types, znucl,
     else:
         lseg = 4
         l = 2
-    
+
     rcovdata =  [[ 0 ,  1.0],
                 [ 1  ,  0.37],
                 [ 2  ,  0.32],
@@ -592,7 +563,7 @@ def get_fp(lat, rxyz, types, znucl,
                 [ 110,  1.28],
                 [ 111,  1.21],
                 [ 112,  1.22]]
-    
+
     #Modified so that now a float is returned and converted into an int
     ixyzf = get_ixyz(lat, cutoff)
     ixyz = int(ixyzf) + 1
@@ -601,7 +572,7 @@ def get_fp(lat, rxyz, types, znucl,
     fc = 1.0 / (2.0 * NC * wc**2)
     nat = len(rxyz)
     cutoff2 = cutoff**2
-    
+
     lfp = np.empty((nat, lseg*nx), dtype = np.float64)
     sfp = np.empty((nat, 20), dtype = np.float64)
     dfp = np.zeros((nat, nat, 3, lseg*nx), dtype = np.float64)
@@ -641,7 +612,7 @@ def get_fp(lat, rxyz, types, znucl,
                                 icenter = n_sphere-1
                             else:
                                 ityp_sphere = types[jat]
-                            
+
                             if n_sphere > int(len(ind)/lseg):
                                 ind = ind + [0]*lseg*(n_sphere-int(len(ind)/lseg))
                             if contract:
@@ -650,8 +621,8 @@ def get_fp(lat, rxyz, types, znucl,
                                         ind[il+lseg*(n_sphere-1)] = ityp_sphere * l
                                     else:
                                         ind[il+lseg*(n_sphere-1)] = ityp_sphere * l + 1
-                            
-                            
+
+
         d2_arr = np.expand_dims(np.array(d2_list), axis=0)
         amp_arr = np.expand_dims(np.array(amp), axis = 0)
         damp_arr = np.expand_dims(np.array(damp), axis = 0)
@@ -680,10 +651,10 @@ def get_fp(lat, rxyz, types, znucl,
         alpha = sorted_comp_tmp_arr[:, 4]
         rxyz_sphere = sorted_comp_tmp_arr[:, 5:8]
         ind = sorted_comp_tmp_arr[:, 8:]
-        
+
         # full overlap matrix
         nid = lseg * nx
-        
+
         lseg = np.int32(lseg)
         icenter = np.int32(0)
         amp = amp.astype(np.float64)
@@ -692,7 +663,7 @@ def get_fp(lat, rxyz, types, znucl,
         alpha = alpha.astype(np.float64)
         rxyz_sphere = rxyz_sphere.astype(np.float64)
         ind = np.ravel(ind.astype(np.int32))
-        
+
         (gom, mamp) = get_gom(lseg, rxyz_sphere, alpha, amp)
         gomamp = gom * mamp
         val, vec = np.linalg.eigh(gomamp)
@@ -739,7 +710,7 @@ def get_fp(lat, rxyz, types, znucl,
                 sfp0[k] = eig_vals[len(eig_vals)-1-k]
             sfp0 = sfp0/np.linalg.norm(sfp0)
             sfp[iat] = sfp0
-    
+
     if contract:
         return sfp, dfp
 
@@ -771,177 +742,3 @@ def get_fpdist(ntyp, types, fp1, fp2, mx=False):
     else:
         return fpd
 
-@jit('Tuple((float64, float64[:,:]))(float64[:,:], float64[:,:,:,:], int32, \
-      int32[:])', nopython=True)
-def get_ef(fp, dfp, ntyp, types):
-    nat = len(fp)
-    e = 0.
-    fp = np.ascontiguousarray(fp)
-    dfp = np.ascontiguousarray(dfp)
-    for ityp in range(ntyp):
-        itype = ityp + 1
-        e0 = 0.
-        for i in range(nat):
-            for j in range(nat):
-                if types[i] == itype and types[j] == itype:
-                    vij = fp[i] - fp[j]
-                    t = np.vdot(vij, vij)
-                    e0 += t
-            e0 += 1.0/(np.linalg.norm(fp[i]) ** 2)
-        # print ("e0", e0)
-        e += e0
-    # print ("e", e)
-
-    force_0 = np.zeros((nat, 3), dtype = np.float64)
-    force_prime = np.zeros((nat, 3), dtype = np.float64)
-
-    for k in range(nat):
-        for ityp in range(ntyp):
-            itype = ityp + 1
-            for i in range(nat):
-                for j in range(nat):
-                    if  types[i] == itype and types[j] == itype:
-                        vij = fp[i] - fp[j]
-                        dvij = dfp[i][k] - dfp[j][k]
-                        for l in range(3):
-                            t = -2 * np.vdot(vij, dvij[l])
-                            force_0[k][l] += t
-                for m in range(3):
-                    t_prime = 2.0 * np.vdot(fp[i],dfp[i][k][m]) / (np.linalg.norm(fp[i]) ** 4)
-                    force_prime[k][m] += t_prime
-    force = force_0 + force_prime
-    force = force - np.sum(force, axis=0)/len(force)
-    # return ((e+1.0)*np.log(e+1.0)-e), force*np.log(e+1.0) 
-    return e, force
-
-
-@jit('(float64)(float64[:,:], int32, int32[:])', nopython=True)
-def get_fpe(fp, ntyp, types):
-    nat = len(fp)
-    e = 0.
-    fp = np.ascontiguousarray(fp)
-    for ityp in range(ntyp):
-        itype = ityp + 1
-        e0 = 0.
-        for i in range(nat):
-            for j in range(nat):
-                if types[i] == itype and types[j] == itype:
-                    vij = fp[i] - fp[j]
-                    t = np.vdot(vij, vij)
-                    e0 += t
-            e0 += 1.0/(np.linalg.norm(fp[i]) ** 2)
-        e += e0
-    # return ((e+1.0)*np.log(e+1.0)-e)
-    return e
-
-@jit('(float64[:])(float64[:,:], float64[:,:], int32[:], int32[:], \
-      boolean, int32, int32, int32, float64)', nopython=True)
-def get_stress(lat, rxyz, types, znucl,
-               contract,
-               ntyp,
-               nx,
-               lmax,
-               cutoff):
-    lat = np.ascontiguousarray(lat)
-    rxyz = np.ascontiguousarray(rxyz)
-    pos = np.dot(rxyz, np.linalg.inv(lat))
-    pos = np.ascontiguousarray(pos)
-    rxyz_delta = np.zeros_like(rxyz)
-    cell_vol = np.linalg.det(lat)
-    stress = np.zeros((3,3), dtype = np.float64)
-    step_size = 1.e-5
-    strain_delta_tmp = step_size*(np.random.randint(1, 9999, (3, 3))/9999)
-    # Make strain tensor symmetric
-    strain_delta = 0.5*(strain_delta_tmp + strain_delta_tmp.T - \
-                        np.diag(np.diag(strain_delta_tmp))) 
-    rxyz_ratio = np.eye(3, dtype = np.float64)
-    for m in range(3):
-        for n in range(3):
-            h = strain_delta[m][n]
-            rxyz_ratio_left = np.eye(3, dtype = np.float64)
-            rxyz_ratio_right = np.eye(3, dtype = np.float64)
-            rxyz_ratio_left[m][n] = rxyz_ratio[m][n] - h
-            rxyz_ratio_left[n][m] = rxyz_ratio_left[m][n]
-            rxyz_ratio_right[m][n] = rxyz_ratio[m][n] + h
-            rxyz_ratio_right[n][m] = rxyz_ratio_right[m][n]
-            lat_left = np.dot(lat, rxyz_ratio_left)
-            lat_right = np.dot(lat, rxyz_ratio_right)
-            rxyz_left = np.dot(pos, lat_left)
-            rxyz_right = np.dot(pos, lat_right)
-            ldfp = False
-            fp_left, dfptmp1 = get_fp(lat_left, rxyz_left, types, znucl, \
-                                      contract, ldfp, ntyp, nx, lmax, cutoff)
-            fp_right, dfptmp2 = get_fp(lat_right, rxyz_right, types, znucl, \
-                                       contract, ldfp, ntyp, nx, lmax, cutoff)
-            fp_energy_left = get_fpe(fp_left, ntyp, types)
-            fp_energy_right = get_fpe(fp_right, ntyp, types)
-            stress[m][n] = (fp_energy_right - fp_energy_left)/(2.0*h*cell_vol)
-        #################
-        
-    #################
-    # print (stress)
-    stress_voigt = np.zeros(6, dtype = np.float64)
-    voigt_list = [0, 4, 8, 5, 2, 1]
-    for i in range(6):
-        stress_voigt[i] = stress.ravel()[voigt_list[i]]
-    # stress_voigt = stress.flat[[0, 4, 8, 5, 2, 1]]
-    # stress_voigt = np.array(stress_voigt, dtype = np.float64)
-    # return np.zeros(6, dtype = np.float64)
-    return stress_voigt
-
-@jit('Tuple((float64, float64))(float64[:,:], float64[:,:], int32[:], int32[:], \
-      boolean, int32, int32, int32, float64)', nopython=True)
-def get_simpson_energy(lat, rxyz, types, znucl,
-                       contract,
-                       ntyp,
-                       nx,
-                       lmax,
-                       cutoff):
-    lat = np.ascontiguousarray(lat)
-    rxyz = np.ascontiguousarray(rxyz)
-    rxyz_delta = np.zeros_like(rxyz)
-    rxyz_disp = np.zeros_like(rxyz)
-    rxyz_left = np.zeros_like(rxyz)
-    rxyz_mid = np.zeros_like(rxyz)
-    rxyz_right = np.zeros_like(rxyz)
-    nat = len(rxyz)
-    del_fpe = 0.0
-    iter_max = 100
-    step_size = 1.e-5
-    rxyz_delta = step_size*( np.random.rand(nat, 3).astype(np.float64) - \
-                            0.5*np.ones((nat, 3), dtype = np.float64) )
-    for i_iter in range(iter_max):
-        rxyz_disp += 2.0*rxyz_delta
-        rxyz_left = rxyz.copy() + 2.0*i_iter*rxyz_delta
-        rxyz_mid = rxyz.copy() + 2.0*(i_iter+1)*rxyz_delta
-        rxyz_right = rxyz.copy() + 2.0*(i_iter+2)*rxyz_delta
-        ldfp = True
-        fp_left, dfp_left = get_fp(lat, rxyz_left, types, znucl, \
-                                   contract, ldfp, ntyp, nx, lmax, cutoff)
-        fp_mid, dfp_mid = get_fp(lat, rxyz_mid, types, znucl, \
-                                   contract, ldfp, ntyp, nx, lmax, cutoff)
-        fp_right, dfp_right = get_fp(lat, rxyz_right, types, znucl, \
-                                     contract, ldfp, ntyp, nx, lmax, cutoff)
-        fpe_left, fpf_left = get_ef(fp_left, dfp_left, ntyp, types)
-        fpe_mid, fpf_mid = get_ef(fp_mid, dfp_mid, ntyp, types)
-        fpe_right, fpf_right = get_ef(fp_right, dfp_right, ntyp, types)
-        
-        rxyz_delta = np.ascontiguousarray(rxyz_delta)
-        fpf_left = np.ascontiguousarray(fpf_left)
-        fpf_mid = np.ascontiguousarray(fpf_mid)
-        fpf_right = np.ascontiguousarray(fpf_right)
-        for i_atom in range(nat):
-            del_fpe += ( -np.dot(rxyz_delta[i_atom], fpf_left[i_atom]) - \
-                        4.0*np.dot(rxyz_delta[i_atom], fpf_mid[i_atom]) - \
-                        np.dot(rxyz_delta[i_atom], fpf_right[i_atom]) )/3.0
-        
-    rxyz_final = rxyz + rxyz_disp
-    ldfp = False
-    fp_init, dfptmp1 = get_fp(lat, rxyz, types, znucl, \
-                              contract, ldfp, ntyp, nx, lmax, cutoff)
-    fp_final, dfptmp2 = get_fp(lat, rxyz_final, types, znucl, \
-                               contract, ldfp, ntyp, nx, lmax, cutoff)
-    e_init = get_fpe(fp_init, ntyp, types)
-    e_final = get_fpe(fp_final, ntyp, types)
-    e_diff = e_final - e_init
-    return del_fpe, e_diff
