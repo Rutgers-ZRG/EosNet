@@ -39,6 +39,7 @@ python3 -m pip install -U pip setuptools wheel
 python3 -m pip install numpy==1.25.0 numba==0.58.0 ase==3.22.1
 python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1
 ```
+The above environment has been tested stable for both M-chip MacOS and CentOS clusters
 
 ## Usage
 
@@ -85,9 +86,6 @@ For detailed info of setting tags you can run
 ```bash
 python3 train.py -h
 ```
-or alternatively
-
-Following is a demo of how to use `train.py`
 
 ```bash
 python3 train.py --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir | tee FpGNN_log.txt
