@@ -1,15 +1,16 @@
-# Crystal Graph Convolutional Neural Networks
+# Fingerprint Graph Neural Networks
 
 **Note**: This version is a personal modification from the [original repo](https://github.com/txie-93/cgcnn), and there are some major changes.
 
 ## Change log
 
+- Using [Fingerprint](https://github.com/Tack-Tau/fplib3/) vectors as atomic features
 - Switch reading pymatgen structures from CIF to POSCAR
-- Add `shuffle` and `drop_last` in `torch.utils.data.DataLoader`
+- Add `drop_last` in `torch.utils.data.DataLoader`
 - Take data imbalance into account for classification job
 - TBD
 
-This software package implements the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
+This software is based on the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
 
 The package provides two major functions:
 
@@ -20,21 +21,10 @@ The following paper describes the details of the CGCNN framework:
 
 [Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties](https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)
 
-## Table of Contents
-
-- [How to cite](#how-to-cite)
-- [Prerequisites](#prerequisites)
-- [Usage](#usage)
-  - [Define a customized dataset](#define-a-customized-dataset)
-  - [Train a CGCNN model](#train-a-cgcnn-model)
-  - [Predict material properties with a pre-trained CGCNN model](#predict-material-properties-with-a-pre-trained-cgcnn-model)
-- [Data](#data)
-- [Authors](#authors)
-- [License](#license)
 
 ## How to cite
 
-Please cite the following work if you want to use CGCNN.
+Please cite the following work if you want to use FpCNN.
 
 ```
 @article{PhysRevLett.120.145301,
@@ -53,42 +43,68 @@ Please cite the following work if you want to use CGCNN.
 }
 ```
 
-##  Prerequisites
+```
+@article{taoAcceleratingStructuralOptimization2024,
+  title = {Accelerating Structural Optimization through Fingerprinting Space Integration on the Potential Energy Surface},
+  author = {Tao, Shuo and Shao, Xuecheng and Zhu, Li},
+  year = {2024},
+  month = mar,
+  journal = {J. Phys. Chem. Lett.},
+  volume = {15},
+  number = {11},
+  pages = {3185--3190},
+  doi = {10.1021/acs.jpclett.4c00275},
+  url = {https://pubs.acs.org/doi/10.1021/acs.jpclett.4c00275}
+}
+```
+
+```
+@article{zhuFingerprintBasedMetric2016,
+  title = {A Fingerprint Based Metric for Measuring Similarities of Crystalline Structures},
+  author = {Zhu, Li and Amsler, Maximilian and Fuhrer, Tobias and Schaefer, Bastian and Faraji, Somayeh and Rostami, Samare and Ghasemi, S. Alireza and Sadeghi, Ali and Grauzinyte, Migle and Wolverton, Chris and Goedecker, Stefan},
+  year = {2016},
+  month = jan,
+  journal = {The Journal of Chemical Physics},
+  volume = {144},
+  number = {3},
+  pages = {034203},
+  doi = {10.1063/1.4940026},
+  url = {https://doi.org/10.1063/1.4940026}
+}
+```
+
+```
+@article{sadeghiMetricsMeasuringDistances2013,
+  title = {Metrics for Measuring Distances in Configuration Spaces},
+  author = {Sadeghi, Ali and Ghasemi, S. Alireza and Schaefer, Bastian and Mohr, Stephan and Lill, Markus A. and Goedecker, Stefan},
+  year = {2013},
+  month = nov,
+  journal = {The Journal of Chemical Physics},
+  volume = {139},
+  number = {18},
+  pages = {184118},
+  doi = {10.1063/1.4828704},
+  url = {https://pubs.aip.org/aip/jcp/article/317391}
+}
+```
+
+##  Dependencies
 
 This package requires:
 
 - [PyTorch](http://pytorch.org)
 - [scikit-learn](http://scikit-learn.org/stable/)
 - [pymatgen](http://pymatgen.org)
+- [ASE](https://wiki.fysik.dtu.dk/ase/)
+- [Numba](https://numba.pydata.org/)
 
-If you are new to Python, the easiest way of installing the prerequisites is via [conda](https://conda.io/docs/index.html). After installing [conda](http://conda.pydata.org/), run the following command to create a new [environment](https://conda.io/docs/user-guide/tasks/manage-environments.html) named `cgcnn` and install all prerequisites:
-
-```bash
-conda upgrade conda
-conda create -n cgcnn python=3 scikit-learn pytorch torchvision pymatgen -c pytorch -c conda-forge
-```
-
-*Note: this code is tested for PyTorch v1.0.0+ and is not compatible with versions below v0.4.0 due to some breaking changes.
-
-This creates a conda environment for running CGCNN. Before using CGCNN, activate the environment by:
+If you are new to Python, please [conda](https://conda.io/docs/index.html) to manage Python packages and environments.
 
 ```bash
-source activate cgcnn
-```
-
-Then, in directory `cgcnn`, you can test if all the prerequisites are installed properly by running:
-
-```bash
-python main.py -h
-python predict.py -h
-```
-
-This should display the help messages for `main.py` and `predict.py`. If you find no error messages, it means that the prerequisites are installed properly.
-
-After you finished using CGCNN, exit the environment by:
-
-```bash
-source deactivate
+conda create -n fpgnn python=3.8 pip ; conda activate fpgnn
+python3 -m pip install -U pip setuptools wheel
+python3 -m pip install numpy==1.25.0 numba==0.58.0 ase==3.22.1
+python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1
 ```
 
 ## Usage
@@ -99,7 +115,6 @@ To input crystal structures to CGCNN, you will need to define a customized datas
 
 Before defining a customized dataset, you will need:
 
-- ~~[CIF](https://en.wikipedia.org/wiki/Crystallographic_Information_File) files recording the structure of the crystals that you are interested in~~
 - [POSCAR](https://www.vasp.at/wiki/index.php/POSCAR) files recording the structure of the crystals that you are interested in
 - The target properties for each crystal (not needed for predicting, but you need to put some random numbers in `id_prop.csv`)
 
@@ -109,9 +124,7 @@ You can create a customized dataset by creating a directory `root_dir` with the 
 
 2. `atom_init.json`: a [JSON](https://en.wikipedia.org/wiki/JSON) file that stores the initialization vector for each element. An example of `atom_init.json` is `data/sample-regression/atom_init.json`, which should be good for most applications.
 
-3 (old). ~~`ID.cif`: a [CIF](https://en.wikipedia.org/wiki/Crystallographic_Information_File) file that recodes the crystal structure, where `ID` is the unique `ID` for the crystal.~~
-
-3 (new). `ID.vasp` a [POSCAR](https://www.vasp.at/wiki/index.php/POSCAR) file that recodes the crystal structure, where `ID` is the unique `ID` for the crystal.
+3. `ID.vasp` a [POSCAR](https://www.vasp.at/wiki/index.php/POSCAR) file that recodes the crystal structure, where `ID` is the unique `ID` for the crystal.
 
 The structure of the `root_dir` should be:
 
@@ -124,38 +137,35 @@ root_dir
 ├── ...
 ```
 
-There are two examples of customized datasets in the repository: `data/sample-regression` for regression and `data/sample-classification` for classification. 
-
-**For advanced PyTorch users**
-
-The above method of creating a customized dataset uses the `CIFData` class in `cgcnn.data`. If you want a more flexible way to input crystal structures, PyTorch has a great [Tutorial](http://pytorch.org/tutorials/beginner/data_loading_tutorial.html#sphx-glr-beginner-data-loading-tutorial-py) for writing your own dataset class.
-
 ### Train a CGCNN model
 
 Before training a new CGCNN model, you will need to:
 
-- [Define a customized dataset](#define-a-customized-dataset) at `root_dir` to store the structure-property relations of interest.
+- Define a customized dataset at `root_dir` to store the structure-property relations of interest.
 
-Then, in directory `cgcnn`, you can train a CGCNN model for your customized dataset by:
+Then, in directory `FpGNN`, you can train a CGCNN model for your customized dataset by:
 
 ```bash
-python main.py root_dir
+python3 train.py root_dir
 ```
 
-You can set the number of training, validation, and test data with labels `--train-size`, `--val-size`, and `--test-size`. Alternatively, you may use the flags `--train-ratio`, `--val-ratio`, `--test-ratio` instead. Note that the ratio flags cannot be used with the size flags simultaneously. For instance, `data/sample-regression` has 10 data points in total. You can train a model by:
+For detailed info of setting tags you can run
 
 ```bash
-python main.py --train-size 6 --val-size 2 --test-size 2 data/sample-regression
+python3 train.py -h
 ```
 or alternatively
+
+Following is a domo of how to use `train.py`
+
 ```bash
-python main.py --train-ratio 0.6 --val-ratio 0.2 --test-ratio 0.2 data/sample-regression
+python3 train.py --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir | tee FpGNN_log.txt
 ```
 
-You can also train a classification model with label `--task classification`. For instance, you can use `data/sample-classification` by:
+To resume from a previous `checkpoint`
 
 ```bash
-python main.py --task classification --train-size 5 --val-size 2 --test-size 3 data/sample-classification
+python3 train.py --resume ./checkpoint.pth.tar --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir | tee FpGNN_log.txt
 ```
 
 After training, you will get three files in `cgcnn` directory.
@@ -166,46 +176,10 @@ After training, you will get three files in `cgcnn` directory.
 
 ### Predict material properties with a pre-trained CGCNN model
 
-Before predicting the material properties, you will need to:
-
-- [Define a customized dataset](#define-a-customized-dataset) at `root_dir` for all the crystal structures that you want to predict.
-- Obtain a [pre-trained CGCNN model](pre-trained) named `pre-trained.pth.tar`.
-
-Then, in directory `cgcnn`, you can predict the properties of the crystals in `root_dir`:
+In directory `FpGNN`, you can predict the properties of the crystals in `root_dir`:
 
 ```bash
 python predict.py pre-trained.pth.tar root_dir
 ```
-
-For instace, you can predict the formation energies of the crystals in `data/sample-regression`:
-
-```bash
-python predict.py pre-trained/formation-energy-per-atom.pth.tar data/sample-regression
-```
-
-And you can also predict if the crystals in `data/sample-classification` are metal (1) or semiconductors (0):
-
-```bash
-python predict.py pre-trained/semi-metal-classification.pth.tar data/sample-classification
-```
-
-Note that for classification, the predicted values in `test_results.csv` is a probability between 0 and 1 that the crystal can be classified as 1 (metal in the above example).
-
-After predicting, you will get one file in `cgcnn` directory:
-
-- `test_results.csv`: stores the `ID`, target value, and predicted value for each crystal in test set. Here the target value is just any number that you set while defining the dataset in `id_prop.csv`, which is not important.
-
-## Data
-
-To reproduce our paper, you can download the corresponding datasets following the [instruction](data/material-data).
-
-## Authors
-
-This software was primarily written by [Tian Xie](http://txie.me) who was advised by [Prof. Jeffrey Grossman](https://dmse.mit.edu/faculty/profile/grossman). 
-
-## License
-
-CGCNN is released under the MIT License.
-
 
 
