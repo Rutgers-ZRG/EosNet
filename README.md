@@ -111,6 +111,8 @@ In directory `FpGNN`, you can predict the properties of the crystals in `root_di
 python predict.py pre-trained.pth.tar root_dir
 ```
 
+***Note***: you need to put some random numbers in `id_prop.csv` and the `struct_id`s are the structures you want to predict.
+
 ## How to cite
 
 Please cite the following work if you want to use FpCNN.
