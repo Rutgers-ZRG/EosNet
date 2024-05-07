@@ -343,15 +343,28 @@ class StructData(Dataset):
         ntyp = np.int32(ntyp)
         nx = np.int32(self.nx)
         lmax = np.int32(self.lmax)
-        cutoff = np.float64(self.radius)
-
-        fp_mat, _ = fplib3_ml.get_fp(lat, rxyz, types, znucl,
-                                     contract = contract,
-                                     ldfp = False,
-                                     ntyp = ntyp,
-                                     nx = nx,
-                                     lmax = lmax,
-                                     cutoff = cutoff)
+        cutoff = np.float64(self.radius*1.88973/3)  # Angstrom to Bohr Radius
+        
+        if len(rxyz) != len(types) or len(set(types)) != len(znucl):
+            print("Structure file: " +
+                  str(cell_file.split('/')[-1]) +
+                  " is erroneous, please double check!")
+            if lmax == 0:
+                lseg = 1
+            else:
+                lseg = 4
+            if contract:
+                fp_mat = np.zeros((len(rxyz), 20), dtype = np.float64)
+            else:
+                fp_mat = np.zeros((len(rxyz), lseg*nx), dtype = np.float64)
+        else:
+            fp_mat, _ = fplib3_ml.get_fp(lat, rxyz, types, znucl,
+                                         contract = contract,
+                                         ldfp = False,
+                                         ntyp = ntyp,
+                                         nx = nx,
+                                         lmax = lmax,
+                                         cutoff = cutoff)
         return fp_mat
 
     @lru_cache(maxsize=None)  # Cache loaded structures
