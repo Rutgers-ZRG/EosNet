@@ -474,7 +474,10 @@ def class_eval(prediction, target):
     if prediction.shape[1] == 2:
         precision, recall, fscore, _ = metrics.precision_recall_fscore_support(
             target_label, pred_label, average='weighted', zero_division=np.nan)
-        auc_score = metrics.roc_auc_score(target_label, prediction[:, 1])
+        try: # Handle "Only one class present in y_true" Error MSG
+            auc_score = metrics.roc_auc_score(target_label, prediction[:, 1])
+        except ValueError:
+            auc_score = 0.0
         accuracy = metrics.accuracy_score(target_label, pred_label)
     else:
         raise NotImplementedError

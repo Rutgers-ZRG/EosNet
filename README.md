@@ -34,7 +34,7 @@ This package requires:
 If you are new to Python, please [conda](https://conda.io/docs/index.html) to manage Python packages and environments.
 
 ```bash
-conda create -n fpgnn python=3.8 pip ; conda activate fpgnn
+conda create -n fpgnn python=3.10 pip ; conda activate fpgnn
 python3 -m pip install -U pip setuptools wheel
 python3 -m pip install numpy==1.25.0 numba==0.58.0 ase==3.22.1
 python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1

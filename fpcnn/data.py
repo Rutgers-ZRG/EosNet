@@ -343,7 +343,7 @@ class StructData(Dataset):
         ntyp = np.int32(ntyp)
         nx = np.int32(self.nx)
         lmax = np.int32(self.lmax)
-        cutoff = np.float64(self.radius*1.88973/3)  # Angstrom to Bohr Radius
+        cutoff = np.float64(int(np.sqrt(self.radius))*3) # Shorter cutoff for GOM
         
         if len(rxyz) != len(types) or len(set(types)) != len(znucl):
             print("Structure file: " +

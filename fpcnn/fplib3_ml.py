@@ -590,7 +590,7 @@ def get_fp(lat, rxyz, types, znucl,
             rcovjur = rcovdata.copy()
             index11 = int(types[jat] - 1)
             index1 = int(znucl[index11])
-            rcovj = rcovjur[index1][1]
+            rcovj = rcovjur[index1][1]*1.88973/2.0 # Bohr Radius to Angstrom
             for ix in range(-ixyz, ixyz+1):
                 for iy in range(-ixyz, ixyz+1):
                     for iz in range(-ixyz, ixyz+1):
