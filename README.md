@@ -32,7 +32,8 @@
   conda install conda-forge::lapack
   cd fplib/fppy/ ; python3 -m pip install -e .
   ```
-  For the remain FpGNN dependecies follow the dependencies instruction.
+  For the remaining FpGNN dependecies follow the original instruction. \
+  **Note**: Currently only `lmax=0` is supported in the C version 
 
 This software is based on the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
 
