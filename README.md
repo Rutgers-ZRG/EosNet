@@ -9,7 +9,8 @@
 - Add `drop_last` in `torch.utils.data.DataLoader`
 - Take data imbalance into account for classification job
 - Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
-- Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/)
+- Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/) \
+  **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend.
 
 This software is based on the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
 
@@ -112,7 +113,7 @@ In directory `FpGNN`, you can predict the properties of the crystals in `root_di
 python predict.py pre-trained.pth.tar root_dir
 ```
 
-***Note***: you need to put some random numbers in `id_prop.csv` and the `struct_id`s are the structures you want to predict.
+**Note**: you need to put some random numbers in `id_prop.csv` and the `struct_id`s are the structures you want to predict.
 
 ## How to cite
 
