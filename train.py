@@ -104,12 +104,12 @@ else:
 
 
 def main():
-    global args, best_mae_error
+    global args, best_mae_error, class_weights
 
     # load data
     dataset = StructData(*args.data_options)
     collate_fn = collate_pool
-    loss_weights, train_loader, val_loader, test_loader = get_train_val_test_loader(
+    class_weights, train_loader, val_loader, test_loader = get_train_val_test_loader(
         dataset=dataset,
         classification=True if args.task =='classification' else False,
         collate_fn=collate_fn,
@@ -164,6 +164,7 @@ def main():
     
     # define loss func and optimizer
     if args.task == 'classification':
+        loss_weights = torch.tensor(class_weights, dtype=torch.float32)
         criterion = nn.NLLLoss(weight=loss_weights, reduction='mean')
     else:
         criterion = nn.MSELoss(reduction='mean')
@@ -508,13 +509,19 @@ def class_eval(prediction, target):
     if not target_label.shape:
         target_label = np.asarray([target_label])
     if prediction.shape[1] == 2:
+        class_weights_dict = {class_idx: weight for class_idx,
+                              weight in zip(np.unique(target_label), class_weights)}
+        sample_weight = [class_weights_dict[class_idx] for class_idx in target_label]
         precision, recall, fscore, _ = metrics.precision_recall_fscore_support(
-            target_label, pred_label, average='weighted', zero_division=np.nan)
+            target_label, pred_label, average='weighted',
+            sample_weight=sample_weight, zero_division=np.nan)
         try: # Handle "Only one class present in y_true" Error MSG
-            auc_score = metrics.roc_auc_score(target_label, prediction[:, 1])
+            auc_score = metrics.roc_auc_score(target_label, prediction[:, 1],
+                                              average='weighted', sample_weight=sample_weight)
         except ValueError:
             auc_score = 0.0
-        accuracy = metrics.accuracy_score(target_label, pred_label)
+        accuracy = metrics.accuracy_score(target_label, pred_label,
+                                          sample_weight=sample_weight)
     else:
         raise NotImplementedError
     return accuracy, precision, recall, fscore, auc_score

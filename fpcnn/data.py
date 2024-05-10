@@ -40,6 +40,7 @@ def get_train_val_test_loader(dataset, classification=False,
     ----------
     dataset: torch.utils.data.Dataset
       The full dataset to be divided.
+    classification: bool
     collate_fn: torch.utils.data.DataLoader
     batch_size: int
     train_ratio: float
@@ -139,9 +140,9 @@ def get_train_val_test_loader(dataset, classification=False,
                                  pin_memory=pin_memory)
     if classification:
         if return_test:
-            return loss_weights, train_loader, val_loader, test_loader
+            return class_weights, train_loader, val_loader, test_loader
         else:
-            return loss_weights, train_loader, val_loader
+            return class_weights, train_loader, val_loader
     else:
         if return_test:
             return None, train_loader, val_loader, test_loader
