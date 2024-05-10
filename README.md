@@ -10,7 +10,7 @@
 - Take data imbalance into account for classification job
 - Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
 - Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/) \
-  **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximized the efficiency of training while using MPS Backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
+  **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximize the efficiency of training while using MPS Backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
 - Switching from Python3 implementation of fplib to [C implementation](https://github.com/zhuligs/fplib) to improve speed. \
   To install this C version you need to modify the `setup.py` in `fplib/fppy`
   ```Python
