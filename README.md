@@ -1,17 +1,17 @@
 # Fingerprint Graph Neural Networks
 
-**Note**: This version is a personal modification from the [original repo](https://github.com/txie-93/cgcnn), and there are some major changes.
+**Note**: This FpGNN package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
 
 ## Change log
 
-- Using [Fingerprint](https://github.com/Tack-Tau/fplib3/) (FP) vectors as atomic features
+- Using atomic-centered Gaussian Overlap Matrix (GOM) Fingerprint vectors as atomic features
 - Switch reading pymatgen structures from CIF to POSCAR
 - Add `drop_last` in `torch.utils.data.DataLoader`
 - Take data imbalance into account for classification job
 - Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
 - Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/) \
   **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximize the efficiency of training while using MPS backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
-- Switching from Python3 implementation of fplib to [C implementation](https://github.com/zhuligs/fplib) to improve speed. \
+- Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/zhuligs/fplib) to improve speed. \
   To install this C version you need to modify the `setup.py` in `fplib/fppy`
   ```Python
   lapack_dir=["$HOME/miniforge3/envs/fplibenv/lib"]
@@ -28,23 +28,20 @@
   ```
   Then install LAPACK using `conda`:
   ```bash
-  conda activate fplibenv
+  conda create -n fplibenv python=3.10 pip ; conda activate fplibenv
+  python3 -m pip install -U pip setuptools wheel
   conda install conda-forge::lapack
   cd fplib/fppy/ ; python3 -m pip install -e .
   ```
   For the remaining FpGNN dependecies follow the original instruction. \
   **Note**: Currently only `lmax=0` is supported in the C version 
 
-This software is based on the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
+This package is based on the [Crystal Graph Convolutional Neural Networks]((https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)) that takes an arbitary crystal structure to predict material properties. 
 
 The package provides two major functions:
 
-- Train a CGCNN model with a customized dataset.
-- Predict material properties of new crystals with a pre-trained CGCNN model.
-
-The following paper describes the details of the CGCNN framework:
-
-[Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties](https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)
+- Train a FpGNN model with a customized dataset.
+- Predict material properties of new crystals with a pre-trained FpGNN model.
 
 ##  Dependencies
 
@@ -59,8 +56,7 @@ This package requires:
 If you are new to Python, please [conda](https://conda.io/docs/index.html) to manage Python packages and environments.
 
 ```bash
-conda create -n fplibenv python=3.10 pip ; conda activate fplibenv
-python3 -m pip install -U pip setuptools wheel
+conda activate fplibenv
 python3 -m pip install numpy>=1.21.4 Scipy>=1.8.0 ase==3.22.1
 python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1
 ```
@@ -70,7 +66,7 @@ The above environment has been tested stable for both M-chip MacOS and CentOS cl
 
 ### Define a customized dataset 
 
-To input crystal structures to CGCNN, you will need to define a customized dataset. Note that this is required for both training and predicting. 
+To input crystal structures to FpGNN, you will need to define a customized dataset. Note that this is required for both training and predicting. 
 
 Before defining a customized dataset, you will need:
 
@@ -94,13 +90,13 @@ root_dir
 ├── ...
 ```
 
-### Train a CGCNN model
+### Train a GNN model
 
-Before training a new CGCNN model, you will need to:
+Before training a new GNN model, you will need to:
 
 - Define a customized dataset at `root_dir` to store the structure-property relations of interest.
 
-Then, in directory `FpGNN`, you can train a CGCNN model for your customized dataset by:
+Then, in directory `FpGNN`, you can train a GNN model for your customized dataset by:
 
 ```bash
 python3 train.py root_dir
@@ -119,16 +115,16 @@ python3 train.py --task regression --workers 31 --epochs 1000 --batch-size 64 --
 To resume from a previous `checkpoint`
 
 ```bash
-python3 train.py --resume ./checkpoint.pth.tar --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir | tee FpGNN_log.txt
+python3 train.py --resume ./checkpoint.pth.tar --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir >> FpGNN_log.txt
 ```
 
-After training, you will get three files in `cgcnn` directory.
+After training, you will get three files in `FpGNN` directory.
 
-- `model_best.pth.tar`: stores the CGCNN model with the best validation accuracy.
-- `checkpoint.pth.tar`: stores the CGCNN model at the last epoch.
+- `model_best.pth.tar`: stores the GNN model with the best validation accuracy.
+- `checkpoint.pth.tar`: stores the GNN model at the last epoch.
 - `test_results.csv`: stores the `ID`, target value, and predicted value for each crystal in test set.
 
-### Predict material properties with a pre-trained CGCNN model
+### Predict material properties with a pre-trained GNN model
 
 In directory `FpGNN`, you can predict the properties of the crystals in `root_dir`:
 
@@ -140,8 +136,9 @@ python predict.py pre-trained.pth.tar root_dir
 
 ## How to cite
 
-Please cite the following work if you want to use FpCNN.
+Please cite the following work if you want to use FpGNN:
 
+For CGCNN framework, please cite:
 ```
 @article{PhysRevLett.120.145301,
   title = {Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties},
@@ -159,6 +156,7 @@ Please cite the following work if you want to use FpCNN.
 }
 ```
 
+If you use [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library, please cite:
 ```
 @article{taoAcceleratingStructuralOptimization2024,
   title = {Accelerating Structural Optimization through Fingerprinting Space Integration on the Potential Energy Surface},
@@ -174,6 +172,7 @@ Please cite the following work if you want to use FpCNN.
 }
 ```
 
+If you use [C implementation](https://github.com/zhuligs/fplib) of the Fingerprint Library, please cite:
 ```
 @article{zhuFingerprintBasedMetric2016,
   title = {A Fingerprint Based Metric for Measuring Similarities of Crystalline Structures},
@@ -189,6 +188,7 @@ Please cite the following work if you want to use FpCNN.
 }
 ```
 
+For GOM Fingerprint methodology, please cite:
 ```
 @article{sadeghiMetricsMeasuringDistances2013,
   title = {Metrics for Measuring Distances in Configuration Spaces},
