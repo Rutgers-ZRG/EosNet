@@ -91,5 +91,8 @@ ENV/
 # User directories
 Local
 
+# DATA directory
+DATA
+
 # .DS_Store
 .DS_Store

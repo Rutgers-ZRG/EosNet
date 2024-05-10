@@ -10,7 +10,30 @@
 - Take data imbalance into account for classification job
 - Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
 - Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/) \
-  **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend.
+  **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximized the efficiency of training while using MPS Backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
+- Switching from Python3 implementation of fplib to [C implementation](https://github.com/zhuligs/fplib) to improve speed. \
+  To install this C version you need to modify the `setup.py` in `fplib/fppy`
+  ```Python
+  lapack_dir=["$HOME/miniforge3/envs/fplibenv/lib"]
+  lapack_lib=['openblas']
+  extra_link_args = ["-Wl,-rpath,$HOME/miniforge3/envs/fplibenv/lib"]
+  .
+  .
+  .
+  include_dirs = [source_dir, "$HOME/miniforge3/envs/fplibenv/include"]
+  ```
+  Also set the corresponding `DYLD_LIBRARY_PATH` in your `.bashrc` file as:
+  ```bash
+  export DYLD_LIBRARY_PATH="$HOME/miniforge3/envs/fplibenv/lib:$DYLD_LIBRARY_PATH"
+  ```
+  Then install LAPACK using `conda`:
+  ```bash
+  conda activate fplibenv
+  conda install conda-forge::lapack
+  cd fplib/fppy/ ; python3 -m pip install -e .
+  ```
+  For the remaining FpGNN dependecies follow the original instruction. \
+  **Note**: Currently only `lmax=0` is supported in the C version 
 
 This software is based on the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
 
@@ -36,7 +59,7 @@ This package requires:
 If you are new to Python, please [conda](https://conda.io/docs/index.html) to manage Python packages and environments.
 
 ```bash
-conda create -n fpgnn python=3.10 pip ; conda activate fpgnn
+conda create -n fplibenv python=3.10 pip ; conda activate fplibenv
 python3 -m pip install -U pip setuptools wheel
 python3 -m pip install numpy==1.25.0 numba==0.58.0 ase==3.22.1
 python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1

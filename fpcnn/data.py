@@ -11,7 +11,7 @@ import csv
 from functools import reduce, lru_cache
 
 import numpy as np
-from . import fplib3_ml
+import fplib
 from pymatgen.core.structure import Structure
 # from pymatgen.io.ase import AseAtomsAdaptor
 from ase.io import read as ase_read
@@ -40,6 +40,7 @@ def get_train_val_test_loader(dataset, classification=False,
     ----------
     dataset: torch.utils.data.Dataset
       The full dataset to be divided.
+    classification: bool
     collate_fn: torch.utils.data.DataLoader
     batch_size: int
     train_ratio: float
@@ -139,9 +140,9 @@ def get_train_val_test_loader(dataset, classification=False,
                                  pin_memory=pin_memory)
     if classification:
         if return_test:
-            return loss_weights, train_loader, val_loader, test_loader
+            return class_weights, train_loader, val_loader, test_loader
         else:
-            return loss_weights, train_loader, val_loader
+            return class_weights, train_loader, val_loader
     else:
         if return_test:
             return None, train_loader, val_loader, test_loader
@@ -303,8 +304,8 @@ class StructData(Dataset):
                  radius=8.0,
                  dmin=0,
                  step=0.2,
-                 nx=128,
-                 lmax=1,
+                 nx=256,
+                 lmax=0,
                  random_seed=42):
         self.cache = {}
         self.root_dir = root_dir
@@ -325,6 +326,22 @@ class StructData(Dataset):
     def __len__(self):
         return len(self.id_prop_data)
 
+    def read_types(self, cell_file):
+        buff = []
+        with open(cell_file) as f:
+            for line in f:
+                buff.append(line.split())
+        try:
+            typt = np.array(buff[5], int)
+        except:
+            del(buff[5])
+            typt = np.array(buff[5], int)
+        types = []
+        for i in range(len(typt)):
+            types += [i+1]*typt[i]
+        types = np.array(types, int)
+        return types
+
     # @lru_cache(maxsize=None)
     def get_fp_mat(self, cell_file):
         atoms = ase_read(cell_file)
@@ -334,38 +351,48 @@ class StructData(Dataset):
         znucl_list = reduce(lambda re, x: re+[x] if x not in re else re, chem_nums, [])
         ntyp = len(znucl_list)
         znucl = np.array(znucl_list, int)
-
-        lat = np.array(lat, dtype = np.float64)
-        rxyz = np.array(rxyz, dtype = np.float64)
-        types = np.int32(fplib3_ml.read_types(cell_file))
-        znucl =  np.int32(znucl)
+        types = self.read_types(cell_file)
+        cell = (lat, rxyz, types, znucl)
         contract = False
-        ntyp = np.int32(ntyp)
-        nx = np.int32(self.nx)
-        lmax = np.int32(self.lmax)
+        natx = int(self.nx)
+        lmax = int(self.lmax)
         cutoff = np.float64(int(np.sqrt(self.radius))*3) # Shorter cutoff for GOM
-        
+
+        if lmax == 0:
+            lseg = 1
+            orbital='s'
+        else:
+            lseg = 4
+            orbital='sp'
+
         if len(rxyz) != len(types) or len(set(types)) != len(znucl):
             print("Structure file: " +
                   str(cell_file.split('/')[-1]) +
                   " is erroneous, please double check!")
-            if lmax == 0:
-                lseg = 1
-            else:
-                lseg = 4
             if contract:
-                fp_mat = np.zeros((len(rxyz), 20), dtype = np.float64)
+                fp = np.zeros((len(rxyz), 20), dtype = np.float64)
             else:
-                fp_mat = np.zeros((len(rxyz), lseg*nx), dtype = np.float64)
+                fp = np.zeros((len(rxyz), lseg*natx), dtype = np.float64)
         else:
-            fp_mat, _ = fplib3_ml.get_fp(lat, rxyz, types, znucl,
-                                         contract = contract,
-                                         ldfp = False,
-                                         ntyp = ntyp,
-                                         nx = nx,
-                                         lmax = lmax,
-                                         cutoff = cutoff)
-        return fp_mat
+            if contract:
+                fp = fplib.get_sfp(cell,
+                                   cutoff=cutoff,
+                                   natx=natx,
+                                   log=False,
+                                   orbital=orbital) # Contracted FP
+                tmp_fp = []
+                for i in range(len(fp)):
+                    if len(fp[i]) < 20:
+                        tmp_fp_at = fp[i].tolist() + [0.0]*(20 - len(fp[i]))
+                        tmp_fp.append(tmp_fp_at)
+                fp = np.array(tmp_fp, dtype=np.float64)
+            else:
+                fp = fplib.get_lfp(cell,
+                                   cutoff=cutoff,
+                                   natx=natx,
+                                   log=False,
+                                   orbital=orbital) # Long FP
+        return fp
 
     @lru_cache(maxsize=None)  # Cache loaded structures
     def __getitem__(self, idx):
