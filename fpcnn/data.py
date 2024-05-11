@@ -408,7 +408,20 @@ class StructData(Dataset):
 
         # Adaptor = AseAtomsAdaptor()
         # atoms = Adaptor.get_atoms(crystal)
-        atom_fea = self.get_fp_mat(cell_file)
+        
+        # One-hot encoding
+        atoms = ase_read(cell_file)
+        chem_nums = list(atoms.numbers)
+        max_atomic_number = max(max(chem_nums), 112)
+        one_hot_encodings = []
+        for atom in atoms:
+            encoding = [0] * (max_atomic_number + 1)
+            encoding[atom.number] = 1
+            one_hot_encodings.append(encoding)
+        one_hot_encodings = np.array(one_hot_encodings, dtype = np.int32)
+        
+        fp_mat = self.get_fp_mat(cell_file)
+        atom_fea = np.hstack((one_hot_encodings, fp_mat))
         all_nbrs = crystal.get_all_neighbors(self.radius, include_index=True)
         all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
         nbr_fea_idx, nbr_fea = [], []
