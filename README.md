@@ -152,7 +152,7 @@ if __name__ == "__main__":
                 print(str(filename) + " is glitchy !")
             else:
                 fp = fplib.get_lfp(cell, cutoff=cutoff, natx=natx, log=False) # Long Fingerprint
-                # fplib.get_sfp(cell, cutoff=cutoff, natx=natx, log=False)   # Contracted Fingerprint         
+                # fp = fplib.get_sfp(cell, cutoff=cutoff, natx=natx, log=False)   # Contracted Fingerprint         
 ```
 
 ## Usage
