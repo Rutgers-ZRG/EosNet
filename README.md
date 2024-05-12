@@ -13,7 +13,7 @@
   **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximize the efficiency of training while using MPS backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
 - Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/zhuligs/fplib) to improve speed. \
   To install this C version you need to modify the `setup.py` in `fplib/fppy`
-  ```Python
+  ```python
   lapack_dir=["$HOME/miniforge3/envs/fplibenv/lib"]
   lapack_lib=['openblas']
   extra_link_args = ["-Wl,-rpath,$HOME/miniforge3/envs/fplibenv/lib"]
@@ -61,6 +61,99 @@ python3 -m pip install numpy>=1.21.4 Scipy>=1.8.0 ase==3.22.1
 python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1
 ```
 The above environment has been tested stable for both M-chip MacOS and CentOS clusters
+
+## Check your strcuture files before use FpGNN
+
+To catch the erroneous POSCAR file you can use the following `check_fp.py` in the `root_dir`:
+```python
+
+#!/usr/bin/env python3
+
+import os
+import sys
+import numpy as np
+from functools import reduce
+import fplib
+from ase.io import read as ase_read
+
+def get_ixyz(lat, cutoff):
+    lat = np.ascontiguousarray(lat)
+    lat2 = np.dot(lat, np.transpose(lat))
+    vec = np.linalg.eigvals(lat2)
+    ixyz = int(np.sqrt(1.0/max(vec))*cutoff) + 1
+    ixyz = np.int32(ixyz)
+    return ixyz
+
+def check_n_sphere(rxyz, lat, cutoff, natx):
+    
+    ixyzf = get_ixyz(lat, cutoff)
+    ixyz = int(ixyzf) + 1
+    nat = len(rxyz)
+    cutoff2 = cutoff**2
+
+    for iat in range(nat):
+        xi, yi, zi = rxyz[iat]
+        n_sphere = 0
+        for jat in range(nat):
+            for ix in range(-ixyz, ixyz+1):
+                for iy in range(-ixyz, ixyz+1):
+                    for iz in range(-ixyz, ixyz+1):
+                        xj = rxyz[jat][0] + ix*lat[0][0] + iy*lat[1][0] + iz*lat[2][0]
+                        yj = rxyz[jat][1] + ix*lat[0][1] + iy*lat[1][1] + iz*lat[2][1]
+                        zj = rxyz[jat][2] + ix*lat[0][2] + iy*lat[1][2] + iz*lat[2][2]
+                        d2 = (xj-xi)**2 + (yj-yi)**2 + (zj-zi)**2
+                        if d2 <= cutoff2:
+                            n_sphere += 1
+                            if n_sphere > natx:
+                                raise ValueError()
+
+
+def read_types(cell_file):
+    buff = []
+    with open(cell_file) as f:
+        for line in f:
+            buff.append(line.split())
+    try:
+        typt = np.array(buff[5], int)
+    except:
+        del(buff[5])
+        typt = np.array(buff[5], int)
+    types = []
+    for i in range(len(typt)):
+        types += [i+1]*typt[i]
+    types = np.array(types, int)
+    return types
+
+if __name__ == "__main__":
+    current_dir = './'
+    for filename in os.listdir(current_dir):
+        f = os.path.join(current_dir, filename)
+        if os.path.isfile(f) and os.path.splitext(f)[-1].lower() == '.vasp':
+            atoms = ase_read(f)
+            lat = atoms.cell[:]
+            rxyz = atoms.get_positions()
+            chem_nums = list(atoms.numbers)
+            znucl_list = reduce(lambda re, x: re+[x] if x not in re else re, chem_nums, [])
+            typ = len(znucl_list)
+            znucl = np.array(znucl_list, int)
+            types = read_types(f)
+            cell = (lat, rxyz, types, znucl)
+
+            natx = int(256)
+            lmax = int(0)
+            cutoff = np.float64(int(np.sqrt(8.0))*3) # Shorter cutoff for GOM
+            
+            try:
+                check_n_sphere(rxyz, lat, cutoff, natx)
+            except ValueError:
+                print(str(filename) + " is glitchy !")
+            
+            if len(rxyz) != len(types) or len(set(types)) != len(znucl):
+                print(str(filename) + " is glitchy !")
+            else:
+                fp = fplib.get_lfp(cell, cutoff=cutoff, natx=natx, log=False) # Long Fingerprint
+                # fplib.get_sfp(cell, cutoff=cutoff, natx=natx, log=False)   # Contracted Fingerprint         
+```
 
 ## Usage
 
