@@ -574,4 +574,11 @@ def adjust_learning_rate(optimizer, epoch, k):
 if __name__ == '__main__':
     set_sharing_strategy('file_system')
     warnings.filterwarnings("ignore", category=UserWarning, message=".*epoch parameter in `scheduler.step\(\)`.*")
+    
+    # For future reproducibility
+    seed = 42       # Your favorite seed, if all false, try 3047 (https://arxiv.org/pdf/2109.08203)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    
     main()
