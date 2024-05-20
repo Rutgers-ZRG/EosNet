@@ -15,7 +15,9 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn import metrics
 from torch.autograd import Variable
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.nn.utils import clip_grad_norm_
+# from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import StepLR, SequentialLR, LinearLR
 from torch.multiprocessing import set_sharing_strategy, get_context
 
 from fpcnn.data import StructData
@@ -37,6 +39,8 @@ parser.add_argument('--epochs', default=200, type=int, metavar='N',
                     help='number of total epochs to run (default: 200)')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
+parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
+                    help='number of epochs for warm-up scheduler')
 parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='N', help='mini-batch size (default: 64)')
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
@@ -151,7 +155,7 @@ def main():
                                 n_h=args.n_h,
                                 classification=True if args.task ==
                                                        'classification' else False)
-    
+
     if args.cuda:
         device = torch.device("cuda")
         model.to(device)
@@ -161,7 +165,7 @@ def main():
     else:
         device = torch.device("cpu")
         model.to(device)
-    
+
     # define loss func and optimizer
     if args.task == 'classification':
         loss_weights = torch.tensor(class_weights, dtype=torch.float32)
@@ -193,21 +197,24 @@ def main():
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-    scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones,
-                            gamma=0.1)
-
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs)
+    main_scheduler = StepLR(optimizer, step_size=50, gamma=0.1)
+    # main_scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
+    # main_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, threshold=0.01, threshold_mode='abs')
+    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[args.warmup_epochs])
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, normalizer)
 
         # evaluate on validation set
-        mae_error = validate(val_loader, model, criterion, normalizer)
+        val_loss, mae_error = validate(val_loader, model, criterion, normalizer)
 
         if mae_error != mae_error:
             print('Exit due to NaN')
             sys.exit(1)
 
         scheduler.step()
+        # scheduler.step(val_loss)
 
         # remember the best mae_eror and save checkpoint
         if args.task == 'regression':
@@ -302,6 +309,10 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
+
+        # Apply gradient clipping
+        clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2.0)
+
         optimizer.step()
 
         # measure elapsed time
@@ -458,11 +469,11 @@ def validate(val_loader, model, criterion, normalizer, test=False):
     if args.task == 'regression':
         print(' {star} MAE {mae_errors.avg:.3f}'.format(star=star_label,
                                                         mae_errors=mae_errors))
-        return mae_errors.avg
+        return losses.avg, mae_errors.avg
     else:
         print(' {star} AUC {auc.avg:.3f}'.format(star=star_label,
                                                  auc=auc_scores))
-        return auc_scores.avg
+        return losses.avg, auc_scores.avg
 
 
 class Normalizer(object):
@@ -562,4 +573,5 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 if __name__ == '__main__':
     set_sharing_strategy('file_system')
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*epoch parameter in `scheduler.step\(\)`.*")
     main()

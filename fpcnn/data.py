@@ -226,7 +226,7 @@ class GaussianDistance(object):
         assert dmax - dmin > step
         self.filter = np.arange(dmin, dmax+step, step)
         if var is None:
-            var = step
+            var = min(2.0*step, (dmax-dmin)/3.0)
         self.var = var
 
     def expand(self, distances):
@@ -302,8 +302,9 @@ class StructData(Dataset):
                  root_dir,
                  max_num_nbr=12,
                  radius=8.0,
-                 dmin=0,
-                 step=0.2,
+                 dmin=0.5,
+                 step=0.1,
+                 var=1.0,
                  nx=256,
                  lmax=0,
                  random_seed=42):
@@ -321,7 +322,7 @@ class StructData(Dataset):
         random.seed(random_seed)
         random.shuffle(self.id_prop_data)
 
-        self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step)
+        self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step, var=var)
 
     def __len__(self):
         return len(self.id_prop_data)
@@ -408,7 +409,7 @@ class StructData(Dataset):
 
         # Adaptor = AseAtomsAdaptor()
         # atoms = Adaptor.get_atoms(crystal)
-        
+
         # One-hot encoding
         atoms = ase_read(cell_file)
         chem_nums = list(atoms.numbers)
@@ -419,9 +420,18 @@ class StructData(Dataset):
             encoding[atom.number] = 1
             one_hot_encodings.append(encoding)
         one_hot_encodings = np.array(one_hot_encodings, dtype = np.int32)
-        
+
         fp_mat = self.get_fp_mat(cell_file)
+        fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
+        f_mat = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
         atom_fea = np.hstack((one_hot_encodings, fp_mat))
+        # atom_fea = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
+        # atom_fea = one_hot_encodings
+
+        # fp_mat = self.get_fp_mat(cell_file)
+        # fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
+        # atom_fea = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
+
         all_nbrs = crystal.get_all_neighbors(self.radius, include_index=True)
         all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
         nbr_fea_idx, nbr_fea = [], []
@@ -442,6 +452,8 @@ class StructData(Dataset):
                                         nbr[:self.max_num_nbr])))
         nbr_fea_idx, nbr_fea = np.array(nbr_fea_idx), np.array(nbr_fea)
         nbr_fea = self.gdf.expand(nbr_fea)
+        nbr_fea[np.abs(nbr_fea) < 1.0e-10] = 0.0
+        nbr_fea = nbr_fea / np.linalg.norm(nbr_fea, axis=-1, keepdims=True)
         nbr_fea = torch.Tensor(nbr_fea)
         nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
         atom_fea = torch.Tensor(atom_fea)
