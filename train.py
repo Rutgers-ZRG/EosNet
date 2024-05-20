@@ -7,6 +7,7 @@ import shutil
 import sys
 import time
 import warnings
+from random import seed as rnd_seed
 from random import sample
 
 import numpy as np
@@ -576,9 +577,9 @@ if __name__ == '__main__':
     warnings.filterwarnings("ignore", category=UserWarning, message=".*epoch parameter in `scheduler.step\(\)`.*")
     
     # For future reproducibility
-    seed = 42       # Your favorite seed, if all false, try 3047 (https://arxiv.org/pdf/2109.08203)
+    seed = 42       # Your favorite seed, if all fail, try 3047 (https://arxiv.org/pdf/2109.08203)
     np.random.seed(seed)
-    random.seed(seed)
+    rnd_seed(seed)
     torch.manual_seed(seed)
     
     main()
