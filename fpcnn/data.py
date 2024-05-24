@@ -8,6 +8,7 @@ import random
 import warnings
 import json
 import csv
+from math import comb
 from functools import reduce, lru_cache
 
 import numpy as np
@@ -313,6 +314,8 @@ class StructData(Dataset):
         self.max_num_nbr, self.radius = max_num_nbr, radius
         self.nx = nx
         self.lmax = lmax
+        assert lmax == 0, 'p-orbitals is not supported at this time!'
+        assert nx >= comb(max_num_nbr, 2), 'nx is too small for the given max_num_nbr!'
         assert os.path.exists(root_dir), 'root_dir does not exist!'
         id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
         assert os.path.isfile(id_prop_file), 'id_prop.csv does not exist!'
@@ -420,18 +423,16 @@ class StructData(Dataset):
             encoding[atom.number] = 1
             one_hot_encodings.append(encoding)
         one_hot_encodings = np.array(one_hot_encodings, dtype = np.int32)
-
+        
+        comb_n_nbr = comb(self.max_num_nbr, 2)
         fp_mat = self.get_fp_mat(cell_file)
+        fp_mat = fp_mat[:, :comb_n_nbr]
         fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
-        f_mat = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
+        fp_mat = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
         atom_fea = np.hstack((one_hot_encodings, fp_mat))
         # atom_fea = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
         # atom_fea = one_hot_encodings
-
-        # fp_mat = self.get_fp_mat(cell_file)
-        # fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
-        # atom_fea = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
-
+        
         all_nbrs = crystal.get_all_neighbors(self.radius, include_index=True)
         all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
         nbr_fea_idx, nbr_fea = [], []
