@@ -1,7 +1,6 @@
-# Fingerprint Graph Neural Networks
+# EosNet
 
-**Note**: This FpGNN package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
-
+**Embedded Overlap Structures for Graph Neural Networks**
 ## Change log
 
 - Using atomic-centered Gaussian Overlap Matrix (GOM) Fingerprint vectors as atomic features
