@@ -6,7 +6,6 @@ from __future__ import print_function, division
 import os
 import random
 import warnings
-import json
 import csv
 from math import comb
 from functools import reduce, lru_cache
@@ -14,13 +13,11 @@ from functools import reduce, lru_cache
 import numpy as np
 import fplib
 from pymatgen.core.structure import Structure
-# from pymatgen.io.ase import AseAtomsAdaptor
 from ase.io import read as ase_read
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
-from torch.multiprocessing import get_context
 from sklearn.utils.class_weight import compute_class_weight
 
 def get_train_val_test_loader(dataset, classification=False,
@@ -28,8 +25,8 @@ def get_train_val_test_loader(dataset, classification=False,
                               batch_size=64, train_ratio=None,
                               val_ratio=0.1, test_ratio=0.1,
                               return_test=False, num_workers=1,
-                              pin_memory=False, persistent_workers=False,
-                              multiprocessing_context=get_context('fork'),
+                              pin_memory=False, persistent_workers=True,
+                              multiprocessing_context=None,
                               shuffle=False, drop_last=True,
                               **kwargs):
     """
@@ -113,30 +110,30 @@ def get_train_val_test_loader(dataset, classification=False,
         test_sampler = SubsetRandomSampler(indices[-test_size:])
     train_loader = DataLoader(dataset, batch_size=batch_size,
                               sampler=train_sampler,
-                              num_workers=num_workers,
+                              num_workers=max(0, num_workers),
                               collate_fn=collate_fn,
                               shuffle=shuffle,
                               drop_last=drop_last,
-                              persistent_workers=persistent_workers,
+                              persistent_workers=persistent_workers and num_workers > 0,
                               multiprocessing_context=multiprocessing_context,
                               pin_memory=pin_memory)
     val_loader = DataLoader(dataset, batch_size=batch_size,
                             sampler=val_sampler,
-                            num_workers=num_workers,
+                            num_workers=max(0, num_workers),
                             collate_fn=collate_fn,
                             shuffle=shuffle,
                             drop_last=drop_last,
-                            persistent_workers=persistent_workers,
+                            persistent_workers=persistent_workers and num_workers > 0,
                             multiprocessing_context=multiprocessing_context,
                             pin_memory=pin_memory)
     if return_test:
         test_loader = DataLoader(dataset, batch_size=batch_size,
                                  sampler=test_sampler,
-                                 num_workers=num_workers,
+                                 num_workers=max(0, num_workers),
                                  collate_fn=collate_fn,
                                  shuffle=shuffle,
                                  drop_last=drop_last,
-                                 persistent_workers=persistent_workers,
+                                 persistent_workers=persistent_workers and num_workers > 0,
                                  multiprocessing_context=multiprocessing_context,
                                  pin_memory=pin_memory)
     if classification:
@@ -159,7 +156,8 @@ def collate_pool(dataset_list):
     ----------
 
     dataset_list: list of tuples for each data point.
-      (atom_fea, nbr_fea, nbr_fea_idx, target)
+      For IdTargetData: (struct_id, target)
+      For StructData: ((atom_fea, nbr_fea, nbr_fea_idx), target, struct_id)
 
       atom_fea: torch.Tensor shape (n_i, atom_fea_len)
       nbr_fea: torch.Tensor shape (n_i, M, nbr_fea_len)
@@ -171,39 +169,54 @@ def collate_pool(dataset_list):
     -------
     N = sum(n_i); N0 = sum(i)
 
-    batch_atom_fea: torch.Tensor shape (N, orig_atom_fea_len)
-      Atom features from atom type
-    batch_nbr_fea: torch.Tensor shape (N, M, nbr_fea_len)
-      Bond features of each atom's M neighbors
-    batch_nbr_fea_idx: torch.LongTensor shape (N, M)
-      Indices of M neighbors of each atom
-    crystal_atom_idx: list of torch.LongTensor of length N0
-      Mapping from the crystal idx to atom idx
-    target: torch.Tensor shape (N, 1)
-      Target value for prediction
-    batch_struct_ids: list
+    For IdTargetData:
+      batch_target: torch.Tensor shape (N, 1)
+      batch_struct_ids: list
+
+    For StructData:
+      batch_atom_fea: torch.Tensor shape (N, orig_atom_fea_len)
+        Atom features from atom type
+      batch_nbr_fea: torch.Tensor shape (N, M, nbr_fea_len)
+        Bond features of each atom's M neighbors
+      batch_nbr_fea_idx: torch.LongTensor shape (N, M)
+        Indices of M neighbors of each atom
+      crystal_atom_idx: list of torch.LongTensor of length N0
+        Mapping from the crystal idx to atom idx
+      target: torch.Tensor shape (N, 1)
+        Target value for prediction
+      batch_struct_ids: list
     """
-    batch_atom_fea, batch_nbr_fea, batch_nbr_fea_idx = [], [], []
-    crystal_atom_idx, batch_target = [], []
-    batch_struct_ids = []
-    base_idx = 0
-    for i, ((atom_fea, nbr_fea, nbr_fea_idx), target, struct_id)\
-            in enumerate(dataset_list):
-        n_i = atom_fea.shape[0]  # number of atoms for this crystal
-        batch_atom_fea.append(atom_fea)
-        batch_nbr_fea.append(nbr_fea)
-        batch_nbr_fea_idx.append(nbr_fea_idx+base_idx)
-        new_idx = torch.LongTensor(np.arange(n_i)+base_idx)
-        crystal_atom_idx.append(new_idx)
-        batch_target.append(target)
-        batch_struct_ids.append(struct_id)
-        base_idx += n_i
-    return (torch.cat(batch_atom_fea, dim=0),
-            torch.cat(batch_nbr_fea, dim=0),
-            torch.cat(batch_nbr_fea_idx, dim=0),
-            crystal_atom_idx),\
-        torch.stack(batch_target, dim=0),\
-        batch_struct_ids
+    # IdTargetData
+    if isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 2:
+        batch_target, batch_struct_ids = [], []
+        for struct_id, target in dataset_list:
+            batch_target.append(torch.tensor([target], dtype=torch.float))
+            batch_struct_ids.append(struct_id)
+        return torch.cat(batch_target, dim=0), batch_struct_ids
+    # StructData
+    elif isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 3:
+        batch_atom_fea, batch_nbr_fea, batch_nbr_fea_idx = [], [], []
+        crystal_atom_idx, batch_target = [], []
+        batch_struct_ids = []
+        base_idx = 0
+        for (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id in dataset_list:
+            n_i = atom_fea.shape[0]  # number of atoms for this crystal
+            batch_atom_fea.append(atom_fea)
+            batch_nbr_fea.append(nbr_fea)
+            batch_nbr_fea_idx.append(nbr_fea_idx+base_idx)
+            new_idx = torch.LongTensor(np.arange(n_i)+base_idx)
+            crystal_atom_idx.append(new_idx)
+            batch_target.append(torch.tensor([target], dtype=torch.float))
+            batch_struct_ids.append(struct_id)
+            base_idx += n_i
+        return (torch.cat(batch_atom_fea, dim=0),
+                torch.cat(batch_nbr_fea, dim=0),
+                torch.cat(batch_nbr_fea_idx, dim=0),
+                crystal_atom_idx),\
+            torch.cat(batch_target, dim=0),\
+            batch_struct_ids
+    else:
+        raise ValueError("Unsupported dataset type")
 
 class GaussianDistance(object):
     """
@@ -249,6 +262,42 @@ class GaussianDistance(object):
         return np.exp(-(distances[..., np.newaxis] - self.filter)**2 /
                       self.var**2)
 
+class IdTargetData(Dataset):
+    """ 
+    A simple dataset to load just the struct_id and target from the dataset's id_prop.csv.
+    This is used for sampling targets without loading the full crystal structure data.
+
+    Parameters
+    ----------
+
+    root_dir: str
+        The path to the root directory of the dataset
+    random_seed: int
+        Random seed for shuffling the dataset.
+
+    Returns
+    -------
+
+    struct_id: str or int
+    target: torch.Tensor shape (1, )
+    """
+    def __init__(self, root_dir, random_seed=42):
+        self.root_dir = root_dir
+        id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
+        assert os.path.isfile(id_prop_file), 'id_prop.csv does not exist!'
+        with open(id_prop_file) as f:
+            reader = csv.reader(f, delimiter=',')
+            self.id_prop_data = [row for row in reader]
+        random.seed(random_seed)
+        random.shuffle(self.id_prop_data)
+
+    def __len__(self):
+        return len(self.id_prop_data)
+
+    def __getitem__(self, idx):
+        struct_id, target = self.id_prop_data[idx]
+        return struct_id, float(target)
+
 class StructData(Dataset):
     """
     The StructData dataset is a wrapper for a dataset where the crystal structures
@@ -287,8 +336,10 @@ class StructData(Dataset):
         Integer to control whether using s orbitals only or both s and p orbitals for
         calculating the Guassian overlap matrix (0 for s orbitals only, other integers
         will indicate that using both s and p orbitals)
-    random_seed: int
-        Random seed for shuffling the dataset
+    num_workers: int
+        Number of workers to parallelize thed process of struct data loading
+    save_to_disk: bool
+        Whether to save the processed dataset to disk for faster future loading.
 
     Returns
     -------
@@ -300,6 +351,7 @@ class StructData(Dataset):
     struct_id: str or int
     """
     def __init__(self,
+                 id_prop_data,
                  root_dir,
                  max_num_nbr=12,
                  radius=8.0,
@@ -308,24 +360,32 @@ class StructData(Dataset):
                  var=1.0,
                  nx=256,
                  lmax=0,
-                 random_seed=42):
-        self.cache = {}
+                 batch_size=64,
+                 drop_last=False,
+                 save_to_disk=False):
         self.root_dir = root_dir
+        self.id_prop_data = id_prop_data
         self.max_num_nbr, self.radius = max_num_nbr, radius
         self.nx = nx
         self.lmax = lmax
+        self.save_to_disk = save_to_disk
         assert lmax == 0, 'p-orbitals is not supported at this time!'
         assert nx >= comb(max_num_nbr, 2), 'nx is too small for the given max_num_nbr!'
-        assert os.path.exists(root_dir), 'root_dir does not exist!'
-        id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
-        assert os.path.isfile(id_prop_file), 'id_prop.csv does not exist!'
-        with open(id_prop_file) as f:
-            reader = csv.reader(f, delimiter = ',')
-            self.id_prop_data = [row for row in reader]
-        random.seed(random_seed)
-        random.shuffle(self.id_prop_data)
-
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.total_size = len(self.id_prop_data)
+        
         self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step, var=var)
+        
+        self.processed_file = os.path.join(self.root_dir, 'processed_data.npz')
+        
+        if save_to_disk:
+            self.save_dataset()
+        
+        if os.path.exists(self.processed_file):
+            self.load_dataset()
+        else:
+            self.processed_data = None
 
     def __len__(self):
         return len(self.id_prop_data)
@@ -364,19 +424,19 @@ class StructData(Dataset):
 
         if lmax == 0:
             lseg = 1
-            orbital='s'
+            orbital = 's'
         else:
             lseg = 4
-            orbital='sp'
+            orbital = 'sp'
 
         if len(rxyz) != len(types) or len(set(types)) != len(znucl):
             print("Structure file: " +
                   str(cell_file.split('/')[-1]) +
                   " is erroneous, please double check!")
             if contract:
-                fp = np.zeros((len(rxyz), 20), dtype = np.float64)
+                fp = np.zeros((len(rxyz), 20), dtype=np.float64)
             else:
-                fp = np.zeros((len(rxyz), lseg*natx), dtype = np.float64)
+                fp = np.zeros((len(rxyz), lseg*natx), dtype=np.float64)
         else:
             if contract:
                 fp = fplib.get_sfp(cell,
@@ -398,23 +458,10 @@ class StructData(Dataset):
                                    orbital=orbital) # Long FP
         return fp
 
-    @lru_cache(maxsize=None)  # Cache loaded structures
-    def __getitem__(self, idx):
-
-        # if idx not in self.cache:
-
-        struct_id, target = self.id_prop_data[idx]
-        cell_file = os.path.join(self.root_dir, struct_id+'.vasp')
-        assert os.path.isfile(cell_file)
-
-        crystal = Structure.from_file(os.path.join(self.root_dir,
-                                                   struct_id+'.vasp'))
-
-        # Adaptor = AseAtomsAdaptor()
-        # atoms = Adaptor.get_atoms(crystal)
-
+    def process_structure(self, crystal, struct_id):
+        """Processes a single structure and returns its features."""
         # One-hot encoding
-        atoms = ase_read(cell_file)
+        atoms = crystal.to_ase_atoms()
         chem_nums = list(atoms.numbers)
         max_atomic_number = max(max(chem_nums), 112)
         one_hot_encodings = []
@@ -422,9 +469,10 @@ class StructData(Dataset):
             encoding = [0] * (max_atomic_number + 1)
             encoding[atom.number] = 1
             one_hot_encodings.append(encoding)
-        one_hot_encodings = np.array(one_hot_encodings, dtype = np.int32)
+        one_hot_encodings = np.array(one_hot_encodings, dtype=np.int32)
         
         comb_n_nbr = comb(self.max_num_nbr, 2)
+        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
         fp_mat = self.get_fp_mat(cell_file)
         fp_mat = fp_mat[:, :comb_n_nbr]
         fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
@@ -455,13 +503,69 @@ class StructData(Dataset):
         nbr_fea = self.gdf.expand(nbr_fea)
         nbr_fea[np.abs(nbr_fea) < 1.0e-10] = 0.0
         nbr_fea = nbr_fea / np.linalg.norm(nbr_fea, axis=-1, keepdims=True)
-        nbr_fea = torch.Tensor(nbr_fea)
-        nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
-        atom_fea = torch.Tensor(atom_fea)
-        target = torch.Tensor([float(target)])
-        '''
-            result = ((atom_fea, nbr_fea, nbr_fea_idx), target, struct_id)
-            self.cache[idx] = result
-        return self.cache[idx]
-        '''
-        return (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id
+
+        return atom_fea, nbr_fea, nbr_fea_idx
+    
+    # @lru_cache(maxsize=None)
+    def __getitem__(self, idx):
+        if self.processed_data is not None:
+            item = self.processed_data[idx]
+        else:
+            item = self.process_item(idx)
+        
+        atom_fea = torch.Tensor(item['atom_fea'])
+        nbr_fea = torch.Tensor(item['nbr_fea'])
+        nbr_fea_idx = torch.LongTensor(item['nbr_fea_idx'])
+        target = torch.Tensor([item['target']])
+        
+        return (atom_fea, nbr_fea, nbr_fea_idx), target, item['struct_id']
+
+    def process_item(self, idx):
+        struct_id, target = self.id_prop_data[idx]
+        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
+        crystal = Structure.from_file(cell_file)
+        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+        return {
+            'atom_fea': atom_fea,
+            'nbr_fea': nbr_fea,
+            'nbr_fea_idx': nbr_fea_idx,
+            'target': float(target),
+            'struct_id': struct_id
+        }
+
+    def load_dataset(self):
+        print(f"Loading dataset from {self.processed_file}")
+        with np.load(self.processed_file, allow_pickle=True) as loader:
+            self.processed_data = loader['data']
+        print(f"Loaded {len(self.processed_data)} data points")
+
+    def save_dataset(self):
+        print("Processing and saving dataset...")
+        data = []
+        for i in range(0, self.total_size, self.batch_size):
+            end_index = min(i + self.batch_size, self.total_size)
+            
+            if self.drop_last and end_index - i < self.batch_size:
+                break
+            
+            batch = [self.process_item(j) for j in range(i, end_index)]
+            data.extend(batch)
+        
+        np.savez_compressed(self.processed_file, data=data)
+        print("Dataset saved to disk.")
+
+    def __iter__(self):
+        self.current_index = 0
+        return self
+
+    def __next__(self):
+        if self.current_index >= self.total_size:
+            raise StopIteration
+        end_index = min(self.current_index + self.batch_size, self.total_size)
+        
+        if self.drop_last and end_index - self.current_index < self.batch_size:
+            raise StopIteration
+        
+        batch = [self.process_item(i) for i in range(self.current_index, end_index)]
+        self.current_index = end_index
+        return batch

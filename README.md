@@ -1,39 +1,59 @@
-# EosNet
+# Fingerprint Graph Neural Networks
 
-**Embedded Overlap Structures for Graph Neural Networks**
+**Note**: This FpGNN package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
+
 ## Change log
 
 - Using atomic-centered Gaussian Overlap Matrix (GOM) Fingerprint vectors as atomic features
 - Switch reading pymatgen structures from CIF to POSCAR
-- Add `drop_last` in `torch.utils.data.DataLoader`
+- Add `drop_last` option in `get_train_val_test_loader`
 - Take data imbalance into account for classification job
 - Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
 - Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/) \
   **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximize the efficiency of training while using MPS backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
-- Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/zhuligs/fplib) to improve speed. \
-  To install this C version you need to modify the `setup.py` in `fplib/fppy`
+- Add `save_to_disk` option, `disable_mps` option and FP related arg options
+- Introduce `IdTargetData` class to do efficient sampling on the dataset
+- Update `collate_pool` to handle both `IdTargetData` and `StructData` type dataset
+- Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/Rutgers-ZRG/libfp) to improve speed. \
+  (Optional) Modify the `setup.py` in `fplib` if you use `conda` to install LAPACK:
   ```python
-  lapack_dir=["$HOME/miniforge3/envs/fplibenv/lib"]
+  lapack_dir=["$CONDA_PREFIX/lib"]
   lapack_lib=['openblas']
-  extra_link_args = ["-Wl,-rpath,$HOME/miniforge3/envs/fplibenv/lib"]
+  extra_link_args = ["-Wl,-rpath,$CONDA_PREFIX/lib"]
   .
   .
   .
-  include_dirs = [source_dir, "$HOME/miniforge3/envs/fplibenv/include"]
+  include_dirs = [source_dir, "$CONDA_PREFIX/include"]
   ```
-  Also set the corresponding `DYLD_LIBRARY_PATH` in your `.bashrc` file as:
+  if you use `brew` to install LAPACK:
+  ```python
+  lapack_dir=["$HOMEBREW_PREFIX/opt/openblas/lib"]
+  lapack_lib=['openblas']
+  extra_link_args = ['-framework', 'Accelerate',
+                     "-Wl,-rpath,$HOMEBREW_PREFIX/opt/openblas/lib"]
+  .
+  .
+  .
+  include_dirs = [source_dir, "$HOMEBREW_PREFIX/opt/openblas/include"]
+  ```
+  you probably need to modify your `~/.bashrc` file for compiler to find the correct LAPACK library:
   ```bash
-  export DYLD_LIBRARY_PATH="$HOME/miniforge3/envs/fplibenv/lib:$DYLD_LIBRARY_PATH"
+  # If you use `conda install conda-forge::lapack`
+  export DYLD_LIBRARY_PATH="$CONDA_PREFIX/lib:$DYLD_LIBRARY_PATH"
+  # If you use `brew install openblas`
+  export CFLAGS="-I/opt/homebrew/opt/openblas/include $CFLAGS"
+  export LDFLAGS="-L/opt/homebrew/opt/openblas/lib $LDFLAGS"
   ```
-  Then install LAPACK using `conda`:
+  Then install the Fingerprint library (Snapshot of `fplib-3.1.2` ):
   ```bash
   conda create -n fplibenv python=3.10 pip ; conda activate fplibenv
   python3 -m pip install -U pip setuptools wheel
-  conda install conda-forge::lapack
-  cd fplib/fppy/ ; python3 -m pip install -e .
+  git clone https://github.com/Tack-Tau/fplib.git
+  cd fplib ; git checkout fplib_3.1.2
+  python3 -m pip install .
   ```
   For the remaining FpGNN dependecies follow the original instruction. \
-  **Note**: Currently only `lmax=0` is supported in the C version 
+  **Note**: ~~Currently only `lmax=0` is supported in the C version~~
 
 This package is based on the [Crystal Graph Convolutional Neural Networks]((https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)) that takes an arbitary crystal structure to predict material properties. 
 
@@ -46,6 +66,7 @@ The package provides two major functions:
 
 This package requires:
 
+- [fplib](https://github.com/Tack-Tau/fplib)
 - [PyTorch](http://pytorch.org)
 - [scikit-learn](http://scikit-learn.org/stable/)
 - [pymatgen](http://pymatgen.org)
@@ -56,7 +77,7 @@ If you are new to Python, please [conda](https://conda.io/docs/index.html) to ma
 
 ```bash
 conda activate fplibenv
-python3 -m pip install numpy>=1.21.4 Scipy>=1.8.0 ase==3.22.1
+python3 -m pip install numpy>=1.21.4 scipy>=1.8.0 ase==3.22.1
 python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1
 ```
 The above environment has been tested stable for both M-chip MacOS and CentOS clusters
@@ -201,13 +222,13 @@ python3 train.py -h
 ```
 
 ```bash
-python3 train.py --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir | tee FpGNN_log.txt
+python3 train.py root_dir --save_to_disk true --disable-mps --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 | tee FpGNN_log.txt
 ```
 
 To resume from a previous `checkpoint`
 
 ```bash
-python3 train.py --resume ./checkpoint.pth.tar --task regression --workers 31 --epochs 1000 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1  root_dir >> FpGNN_log.txt
+python3 train.py root_dir --save_to_disk false --disable-mps --resume ./checkpoint.pth.tar --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 >> FpGNN_log.txt
 ```
 
 After training, you will get three files in `FpGNN` directory.
