@@ -17,23 +17,48 @@ import torch.optim as optim
 from sklearn import metrics
 from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm_
-# from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 from torch.optim.lr_scheduler import StepLR, SequentialLR, LinearLR
 from torch.multiprocessing import set_sharing_strategy, get_context
 
-from fpcnn.data import StructData
+from fpcnn.data import IdTargetData, StructData
 from fpcnn.data import collate_pool, get_train_val_test_loader
 from fpcnn.model import CrystalGraphConvNet
 
-parser = argparse.ArgumentParser(description='Crystal Graph Convolutional Neural Networks')
-parser.add_argument('data_options', metavar='OPTIONS', nargs='+',
-                    help='dataset options, started with the path to root dir, '
-                         'then other options')
+parser = argparse.ArgumentParser(description='FpGNN: A Fingerprint Embedded Graph Neural Network')
+# Explicitly add arguments for data options
+parser.add_argument('root_dir', metavar='ROOT_DIR', type=str,
+                    help='Path to the root directory')
+parser.add_argument('--max_num_nbr', default=12, type=int,
+                    help='Maximum number of neighbors (default: 12)')
+parser.add_argument('--radius', default=8.0, type=float,
+                    help='The cutoff radius for searching neighbors (default: 8.0)')
+parser.add_argument('--dmin', default=0.5, type=float,
+                    help='Minimum distance of GDF (default: 0.5)')
+parser.add_argument('--step', default=0.1, type=float,
+                    help='Step size of GDF (default: 0.1)')
+parser.add_argument('--var', default=1.0, type=float,
+                    help='Variance of GDF (default: 1.0)')
+parser.add_argument('--nx', default=256, type=int,
+                    help='Maximum number of neighbors to construct '
+                    'the Gaussian overlap matrix for atomic Fingerprint (default: 256)')
+parser.add_argument('--lmax', default=0, type=int,
+                    help='Integer to control whether using s orbitals only '
+                    'or both s and p orbitals for calculating the Guassian '
+                    'overlap matrix. 0 for s orbitals only, other integers '
+                    'will indicate that using both s and p orbitals. (default: 0)')
+parser.add_argument('--random_seed', default=42, type=int,
+                    help='Random seed (default: 42)')
+parser.add_argument('--save_to_disk', default=False, type=lambda x: (str(x).lower() == 'true'),
+                    help='Save data to disk (default: False)')
 parser.add_argument('--task', choices=['regression', 'classification'],
-                    default='regression', help='complete a regression or '
-                                                   'classification task (default: regression)')
+                    default='regression',
+                    help='complete a regression or '
+                    'classification task (default: regression)')
 parser.add_argument('--disable-cuda', action='store_true',
                     help='Disable CUDA')
+parser.add_argument('--disable-mps', action='store_true',
+                    help='Disable Apple Metal Acceleration')
 parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
                     help='number of data loading workers (default: 0)')
 parser.add_argument('--epochs', default=200, type=int, metavar='N',
@@ -43,19 +68,25 @@ parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
 parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
                     help='number of epochs for warm-up scheduler')
 parser.add_argument('-b', '--batch-size', default=64, type=int,
-                    metavar='N', help='mini-batch size (default: 64)')
+                    metavar='N',
+                    help='mini-batch size (default: 64)')
+parser.add_argument('--drop-last', action='store_true',
+                    help='Drop the last incomplete batch if the dataset '
+                    'size is not divisible by the batch size')
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
-                    metavar='LR', help='initial learning rate (default: '
-                                       '0.01)')
+                    metavar='LR',
+                    help='initial learning rate (default: 0.01)')
 parser.add_argument('--lr-milestones', default=[100], nargs='+', type=int,
-                    metavar='N', help='milestones for scheduler (default: '
-                                      '[100])')
+                    metavar='N',
+                    help='milestones for scheduler (default: [100])')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=0, type=float,
-                    metavar='W', help='weight decay (default: 0)')
+                    metavar='W',
+                    help='weight decay (default: 0)')
 parser.add_argument('--print-freq', '-p', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
+                    metavar='N',
+                    help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 train_group = parser.add_mutually_exclusive_group()
@@ -65,14 +96,12 @@ train_group.add_argument('--train-size', default=None, type=int, metavar='N',
                          help='number of training data to be loaded (default none)')
 valid_group = parser.add_mutually_exclusive_group()
 valid_group.add_argument('--val-ratio', default=0.1, type=float, metavar='N',
-                    help='percentage of validation data to be loaded (default '
-                         '0.1)')
+                         help='percentage of validation data to be loaded (default 0.1)')
 valid_group.add_argument('--val-size', default=None, type=int, metavar='N',
-                         help='number of validation data to be loaded (default '
-                              '1000)')
+                         help='number of validation data to be loaded (default 1000)')
 test_group = parser.add_mutually_exclusive_group()
 test_group.add_argument('--test-ratio', default=0.1, type=float, metavar='N',
-                    help='percentage of test data to be loaded (default 0.1)')
+                        help='percentage of test data to be loaded (default 0.1)')
 test_group.add_argument('--test-size', default=None, type=int, metavar='N',
                         help='number of test data to be loaded (default 1000)')
 
@@ -90,7 +119,7 @@ parser.add_argument('--n-h', default=1, type=int, metavar='N',
 args = parser.parse_args(sys.argv[1:])
 
 args.cuda = not args.disable_cuda and torch.cuda.is_available()
-args.mps = torch.backends.mps.is_available() and torch.backends.mps.is_built()
+args.mps = not args.disable_mps and torch.backends.mps.is_available() and torch.backends.mps.is_built()
 
 if args.cuda:
     device = torch.device("cuda")
@@ -110,12 +139,26 @@ else:
 
 def main():
     global args, best_mae_error, class_weights
-
-    # load data
-    dataset = StructData(*args.data_options)
+    # Load IdTargetData
+    id_target_dataset = IdTargetData(root_dir=args.root_dir,
+                                     random_seed=args.random_seed)
+    
+    # load StructData
+    struct_dataset = StructData(id_prop_data=id_target_dataset,
+                                root_dir=args.root_dir,
+                                max_num_nbr=args.max_num_nbr,
+                                radius=args.radius,
+                                dmin=args.dmin,
+                                step=args.step,
+                                var=args.var,
+                                nx=args.nx,
+                                lmax=args.lmax,
+                                batch_size=args.batch_size,
+                                drop_last=args.drop_last,
+                                save_to_disk=args.save_to_disk)
     collate_fn = collate_pool
     class_weights, train_loader, val_loader, test_loader = get_train_val_test_loader(
-        dataset=dataset,
+        dataset=struct_dataset,
         classification=True if args.task =='classification' else False,
         collate_fn=collate_fn,
         batch_size=args.batch_size,
@@ -127,26 +170,30 @@ def main():
         train_size=args.train_size,
         val_size=args.val_size,
         test_size=args.test_size,
-        multiprocessing_context=None if args.workers == 0 else get_context('fork'),
+        drop_last=args.drop_last,
+        multiprocessing_context=get_context('spawn') if args.workers > 0 else None,
         return_test=True)
 
     # obtain target value normalizer
     if args.task == 'classification':
-        normalizer = Normalizer(torch.zeros(2))
+        normalizer = Normalizer(0.0)
         normalizer.load_state_dict({'mean': 0., 'std': 1.})
     else:
-        if len(dataset) < 500:
-            warnings.warn('Dataset has less than 500 data points. '
+        if len(id_target_dataset) < 1000:
+            warnings.warn('Dataset has less than 1000 data points. '
                           'Lower accuracy is expected. ')
-            sample_data_list = [dataset[i] for i in range(len(dataset))]
+            sample_indices = range(len(id_target_dataset))
         else:
-            sample_data_list = [dataset[i] for i in
-                                sample(range(len(dataset)), 500)]
-        _, sample_target, _ = collate_pool(sample_data_list)
+            sample_size = 1000 + int(0.1 * (len(id_target_dataset) - 1000))
+            sample_indices = sample(range(len(id_target_dataset)), sample_size)
+        
+        # Use id_target_dataset directly
+        sample_data_list = [id_target_dataset[i] for i in sample_indices]
+        sample_target = torch.tensor([target for _, target in sample_data_list], dtype=torch.float)
         normalizer = Normalizer(sample_target)
 
     # build model
-    structures, _, _ = dataset[0]
+    structures, _, _ = struct_dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
     nbr_fea_len = structures[1].shape[-1]
     model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
@@ -160,12 +207,15 @@ def main():
     if args.cuda:
         device = torch.device("cuda")
         model.to(device)
+        normalizer.to(device)
     elif args.mps:
         device = torch.device("mps")
         model.to(device)
+        normalizer.to(device)
     else:
         device = torch.device("cpu")
         model.to(device)
+        normalizer.to(device)
 
     # define loss func and optimizer
     if args.task == 'classification':
@@ -199,8 +249,8 @@ def main():
             print("=> no checkpoint found at '{}'".format(args.resume))
 
     warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs)
-    main_scheduler = StepLR(optimizer, step_size=50, gamma=0.1)
-    # main_scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
+    # main_scheduler = StepLR(optimizer, step_size=100, gamma=0.1)
+    main_scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
     # main_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, threshold=0.01, threshold_mode='abs')
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[args.warmup_epochs])
     for epoch in range(args.start_epoch, args.epochs):
@@ -266,16 +316,20 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                          Variable(input[1].to("cuda", non_blocking=True)),
                          input[2].to("cuda", non_blocking=True),
                          [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
+            target = target.to("cuda", non_blocking=True)
         elif args.mps:
             input_var = (Variable(input[0].to("mps", non_blocking=False)),
                          Variable(input[1].to("mps", non_blocking=False)),
                          input[2].to("mps", non_blocking=False),
-                         [crys_idx.to("mps", non_blocking=True) for crys_idx in input[3]])
+                         [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
+            target = target.to("mps", non_blocking=False)
         else:
             input_var = (Variable(input[0]),
                          Variable(input[1]),
                          input[2],
                          input[3])
+        target = target.view(-1, 1)
+        target = target.to(device)
         # normalize target
         if args.task == 'regression':
             target_normed = normalizer.norm(target)
@@ -294,13 +348,13 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
 
         # measure accuracy and record loss
         if args.task == 'regression':
-            mae_error = mae(normalizer.denorm(output.data.cpu()), target)
+            mae_error = mae(normalizer.denorm(output.data), target)
             losses.update(loss.data.cpu(), target.size(0))
             mae_errors.update(mae_error, target.size(0))
         else:
             accuracy, precision, recall, fscore, auc_score = \
-                class_eval(output.data.cpu(), target)
-            losses.update(loss.data.cpu().item(), target.size(0))
+                class_eval(output.data, target)
+            losses.update(loss.item(), target.size(0))
             accuracies.update(accuracy, target.size(0))
             precisions.update(precision, target.size(0))
             recalls.update(recall, target.size(0))
@@ -374,18 +428,22 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                              Variable(input[1].to("cuda", non_blocking=True)),
                              input[2].to("cuda", non_blocking=True),
                              [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
+                target = target.to("cuda", non_blocking=True)
         elif args.mps:
             with torch.no_grad():
                 input_var = (Variable(input[0].to("mps", non_blocking=False)),
                              Variable(input[1].to("mps", non_blocking=False)),
                              input[2].to("mps", non_blocking=False),
                              [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
+                target = target.to("mps", non_blocking=False)
         else:
             with torch.no_grad():
                 input_var = (Variable(input[0]),
                              Variable(input[1]),
                              input[2],
                              input[3])
+        target = target.view(-1, 1)
+        target = target.to(device)
         if args.task == 'regression':
             target_normed = normalizer.norm(target)
         else:
@@ -406,11 +464,11 @@ def validate(val_loader, model, criterion, normalizer, test=False):
 
         # measure accuracy and record loss
         if args.task == 'regression':
-            mae_error = mae(normalizer.denorm(output.data.cpu()), target)
-            losses.update(loss.data.cpu().item(), target.size(0))
+            mae_error = mae(normalizer.denorm(output.data), target)
+            losses.update(loss.item(), target.size(0))
             mae_errors.update(mae_error, target.size(0))
             if test:
-                test_pred = normalizer.denorm(output.data.cpu())
+                test_pred = normalizer.denorm(output.data)
                 test_target = target
                 test_preds += test_pred.view(-1).tolist()
                 test_targets += test_target.view(-1).tolist()
@@ -463,7 +521,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
         with open('test_results.csv', 'w') as f:
             writer = csv.writer(f)
             for struct_id, target, pred in zip(test_struct_ids, test_targets,
-                                            test_preds):
+                                               test_preds):
                 writer.writerow((struct_id, target, pred))
     else:
         star_label = '*'
@@ -482,14 +540,22 @@ class Normalizer(object):
 
     def __init__(self, tensor):
         """tensor is taken as a sample to calculate the mean and std"""
-        self.mean = torch.mean(tensor)
-        self.std = torch.std(tensor)
+        if isinstance(tensor, torch.Tensor):
+            self.mean = torch.mean(tensor)
+            self.std = torch.std(tensor)
+        else:
+            self.mean = tensor
+            self.std = 1.0
 
     def norm(self, tensor):
-        return (tensor - self.mean) / self.std
+        if isinstance(self.mean, torch.Tensor):
+            return (tensor - self.mean) / self.std
+        return tensor
 
     def denorm(self, normed_tensor):
-        return normed_tensor * self.std + self.mean
+        if isinstance(self.mean, torch.Tensor):
+            return normed_tensor * self.std + self.mean
+        return normed_tensor
 
     def state_dict(self):
         return {'mean': self.mean,
@@ -498,7 +564,12 @@ class Normalizer(object):
     def load_state_dict(self, state_dict):
         self.mean = state_dict['mean']
         self.std = state_dict['std']
-
+    
+    def to(self, device):
+        if isinstance(self.mean, torch.Tensor):
+            self.mean = self.mean.to(device)
+            self.std = self.std.to(device)
+        return self
 
 def mae(prediction, target):
     """
@@ -514,8 +585,8 @@ def mae(prediction, target):
 
 
 def class_eval(prediction, target):
-    prediction = np.exp(prediction.numpy())
-    target = target.numpy()
+    prediction = prediction.detach().cpu().numpy()
+    target = target.detach().cpu().numpy()
     pred_label = np.argmax(prediction, axis=1)
     target_label = np.squeeze(target)
     if not target_label.shape:
@@ -573,6 +644,7 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 
 if __name__ == '__main__':
+    os.system('ulimit -n 4096')
     set_sharing_strategy('file_system')
     warnings.filterwarnings("ignore", category=UserWarning, message=".*epoch parameter in `scheduler.step\(\)`.*")
     

@@ -5,7 +5,7 @@ import argparse
 import os
 import shutil
 import sys
-import time
+import csv
 
 import numpy as np
 import torch
@@ -25,10 +25,16 @@ parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='N', help='mini-batch size (default: 64)')
 parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
                     help='number of data loading workers (default: 0)')
+parser.add_argument('--save_to_disk', default=False, type=lambda x: (str(x).lower() == 'true'),
+                    help='Save data to disk (default: False)')
 parser.add_argument('--disable-cuda', action='store_true',
                     help='Disable CUDA')
+parser.add_argument('--disable-mps', action='store_true',
+                    help='Disable MPS')
 parser.add_argument('--print-freq', '-p', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--test', action='store_true', default=False,
+                    help='output predicted targets to CSV file')
 
 args = parser.parse_args(sys.argv[1:])
 if os.path.isfile(args.modelpath):
@@ -41,7 +47,7 @@ else:
     print("=> no model params found at '{}'".format(args.modelpath))
 
 args.cuda = not args.disable_cuda and torch.cuda.is_available()
-args.mps = torch.backends.mps.is_available() and torch.backends.mps.is_built()
+args.mps = not args.disable_mps and torch.backends.mps.is_available() and torch.backends.mps.is_built()
 
 if model_args.task == 'regression':
     best_mae_error = 1e10
@@ -52,11 +58,75 @@ else:
 def main():
     global args, model_args, best_mae_error
 
+    # Automatically generate id_prop.csv if it doesn't exist
+    id_prop_path = os.path.join(args.structpath, 'id_prop.csv')
+    if not os.path.exists(id_prop_path):
+        print(f"Generating id_prop.csv in {args.structpath}")
+        struct_ids = []
+        for filename in os.listdir(args.structpath):
+            if filename.endswith('.vasp'):
+                struct_ids.append(filename.replace('.vasp', ''))
+        if not struct_ids:
+            raise ValueError(f"No .vasp files found in {args.structpath}")
+            
+        # Generate dummy targets
+        if model_args.task == 'classification':
+            targets = np.random.randint(0, 2, size=len(struct_ids))
+        else:
+            targets = np.random.rand(len(struct_ids))
+        
+        # Write to id_prop.csv
+        with open(id_prop_path, 'w') as f:
+            for sid, target in zip(struct_ids, targets):
+                f.write(f'{sid},{target}\n')
+
+    # Load id_prop.csv without shuffling
+    with open(id_prop_path) as f:
+        reader = csv.reader(f, delimiter=',')
+        id_prop_data = [row for row in reader]
+    
+    # Create a simple class to mimic IdTargetData behavior without shuffling
+    class SimpleIdTargetData:
+        def __init__(self, data):
+            self.id_prop_data = data
+        def __len__(self):
+            return len(self.id_prop_data)
+        def __getitem__(self, idx):
+            struct_id, target = self.id_prop_data[idx]
+            return struct_id, float(target)
+    
+    # Create id_target_data without shuffling
+    id_target_data = SimpleIdTargetData(id_prop_data)
+
+    # Clean up any existing cached data
+    processed_file = os.path.join(args.structpath, 'processed_data.npz')
+    if os.path.exists(processed_file):
+        print(f"Removing existing cached file: {processed_file}")
+        os.remove(processed_file)
+
     # load data
-    dataset = StructData(args.structpath)
-    collate_fn = collate_pool
-    test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
-                             num_workers=args.workers, collate_fn=collate_fn,
+    dataset = StructData(id_prop_data=id_target_data,
+                         root_dir=args.structpath,
+                         max_num_nbr=model_args.max_num_nbr,
+                         radius=model_args.radius,
+                         dmin=model_args.dmin,
+                         step=model_args.step,
+                         var=model_args.var,
+                         nx=model_args.nx,
+                         lmax=model_args.lmax,
+                         save_to_disk=args.save_to_disk)
+
+    def ordered_collate(data_list):
+        _, _, struct_ids = zip(*data_list)
+        batch_data = collate_pool(data_list)
+        
+        return batch_data[0], batch_data[1], list(struct_ids)
+
+    test_loader = DataLoader(dataset,
+                             batch_size=args.batch_size,
+                             shuffle=False,
+                             num_workers=args.workers,
+                             collate_fn=ordered_collate,
                              pin_memory=args.cuda)
 
     # build model
@@ -70,32 +140,26 @@ def main():
                                 n_h=model_args.n_h,
                                 classification=True if model_args.task ==
                                 'classification' else False)
+    
+    # Initialize normalizer
+    if model_args.task == 'classification':
+        normalizer = Normalizer(0.0)
+        normalizer.load_state_dict({'mean': 0., 'std': 1.})
+    else:
+        normalizer = Normalizer(0.0)
+
     if args.cuda:
         device = torch.device("cuda")
         model.to(device)
+        normalizer.to(device)
     elif args.mps:
         device = torch.device("mps")
         model.to(device)
+        normalizer.to(device)
     else:
         device = torch.device("cpu")
         model.to(device)
-
-    # define loss func and optimizer
-    if model_args.task == 'classification':
-        criterion = nn.NLLLoss()
-    else:
-        criterion = nn.MSELoss()
-    # if args.optim == 'SGD':
-    #     optimizer = optim.SGD(model.parameters(), args.lr,
-    #                           momentum=args.momentum,
-    #                           weight_decay=args.weight_decay)
-    # elif args.optim == 'Adam':
-    #     optimizer = optim.Adam(model.parameters(), args.lr,
-    #                            weight_decay=args.weight_decay)
-    # else:
-    #     raise NameError('Only SGD or Adam is allowed as --optim')
-
-    normalizer = Normalizer(torch.zeros(3))
+        normalizer.to(device)
 
     # optionally resume from a checkpoint
     if os.path.isfile(args.modelpath):
@@ -110,147 +174,85 @@ def main():
     else:
         print("=> no model found at '{}'".format(args.modelpath))
 
-    validate(test_loader, model, criterion, normalizer, test=True)
+    validate(test_loader, model, normalizer, test=args.test)
 
 
-def validate(val_loader, model, criterion, normalizer, test=False):
-    batch_time = AverageMeter()
-    losses = AverageMeter()
-    if model_args.task == 'regression':
-        mae_errors = AverageMeter()
-    else:
-        accuracies = AverageMeter()
-        precisions = AverageMeter()
-        recalls = AverageMeter()
-        fscores = AverageMeter()
-        auc_scores = AverageMeter()
-    if test:
-        test_targets = []
-        test_preds = []
-        test_struct_ids = []
-
+def validate(val_loader, model, normalizer, test=False):
+    # Always initialize these variables
+    test_preds = []
+    test_struct_ids = []
+    
     # switch to evaluate mode
     model.eval()
 
-    end = time.time()
-    for i, (input, target, batch_struct_ids) in enumerate(val_loader):
+    for _, (input, _, batch_struct_ids) in enumerate(val_loader):
         with torch.no_grad():
             if args.cuda:
                 input_var = (Variable(input[0].to("cuda", non_blocking=True)),
-                             Variable(input[1].to("cuda", non_blocking=True)),
-                             input[2].to("cuda", non_blocking=True),
-                             [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
+                            Variable(input[1].to("cuda", non_blocking=True)),
+                            input[2].to("cuda", non_blocking=True),
+                            [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
             elif args.mps:
                 input_var = (Variable(input[0].to("mps", non_blocking=False)),
-                             Variable(input[1].to("mps", non_blocking=False)),
-                             input[2].to("mps", non_blocking=False),
-                             [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
+                            Variable(input[1].to("mps", non_blocking=False)),
+                            input[2].to("mps", non_blocking=False),
+                            [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
             else:
                 input_var = (Variable(input[0]),
-                             Variable(input[1]),
-                             input[2],
-                             input[3])
-        if model_args.task == 'regression':
-            target_normed = normalizer.norm(target)
-        else:
-            target_normed = target.view(-1).long()
-        with torch.no_grad():
-            if args.cuda:
-                target_var = Variable(target_normed.to("cuda", non_blocking=True))
-            elif args.mps:
-                target_var = Variable(target_normed.to("mps", non_blocking=False))
-            else:
-                target_var = Variable(target_normed)
+                            Variable(input[1]),
+                            input[2],
+                            input[3])
 
         # compute output
         output = model(*input_var)
-        loss = criterion(output, target_var)
-
-        # measure accuracy and record loss
+        
+        # Store predictions
         if model_args.task == 'regression':
-            mae_error = mae(normalizer.denorm(output.data.cpu()), target)
-            losses.update(loss.data.cpu().item(), target.size(0))
-            mae_errors.update(mae_error, target.size(0))
-            if test:
-                test_pred = normalizer.denorm(output.data.cpu())
-                test_target = target
-                test_preds += test_pred.view(-1).tolist()
-                test_targets += test_target.view(-1).tolist()
-                test_struct_ids += batch_struct_ids
+            pred = normalizer.denorm(output.data.cpu())
+            test_preds += pred.view(-1).tolist()
         else:
-            accuracy, precision, recall, fscore, auc_score =\
-                class_eval(output.data.cpu(), target)
-            losses.update(loss.data.cpu().item(), target.size(0))
-            accuracies.update(accuracy, target.size(0))
-            precisions.update(precision, target.size(0))
-            recalls.update(recall, target.size(0))
-            fscores.update(fscore, target.size(0))
-            auc_scores.update(auc_score, target.size(0))
-            if test:
-                test_pred = torch.exp(output.data.cpu())
-                test_target = target
-                assert test_pred.shape[1] == 2
-                test_preds += test_pred[:, 1].tolist()
-                test_targets += test_target.view(-1).tolist()
-                test_struct_ids += batch_struct_ids
+            pred = torch.exp(output.data.cpu())
+            test_preds += pred[:, 1].tolist()
+        test_struct_ids += batch_struct_ids
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            if model_args.task == 'regression':
-                print('Test: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'MAE {mae_errors.val:.3f} ({mae_errors.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses,
-                       mae_errors=mae_errors))
-            else:
-                print('Test: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Accu {accu.val:.3f} ({accu.avg:.3f})\t'
-                      'Precision {prec.val:.3f} ({prec.avg:.3f})\t'
-                      'Recall {recall.val:.3f} ({recall.avg:.3f})\t'
-                      'F1 {f1.val:.3f} ({f1.avg:.3f})\t'
-                      'AUC {auc.val:.3f} ({auc.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses,
-                       accu=accuracies, prec=precisions, recall=recalls,
-                       f1=fscores, auc=auc_scores))
-
+    # Output predictions
     if test:
-        star_label = '**'
-        import csv
-        with open('test_results.csv', 'w') as f:
-            writer = csv.writer(f)
-            for struct_id, target, pred in zip(test_struct_ids, test_targets,
-                                            test_preds):
-                writer.writerow((struct_id, target, pred))
+        # Save to CSV
+        print("\nSaving predictions to target_predicted.csv")
+        with open('target_predicted.csv', 'w') as f:
+            for struct_id, pred in zip(test_struct_ids, test_preds):
+                f.write(f'{struct_id},{pred}\n')
     else:
-        star_label = '*'
-    if model_args.task == 'regression':
-        print(' {star} MAE {mae_errors.avg:.3f}'.format(star=star_label,
-                                                        mae_errors=mae_errors))
-        return mae_errors.avg
-    else:
-        print(' {star} AUC {auc.avg:.3f}'.format(star=star_label,
-                                                 auc=auc_scores))
-        return auc_scores.avg
+        # Print to screen
+        print("\nPredictions:")
+        for struct_id, pred in zip(test_struct_ids, test_preds):
+            if model_args.task == 'classification':
+                print(f"{struct_id},{pred:.16f}")
+            else:
+                print(f"{struct_id},{pred:.16f}")
 
 
 class Normalizer(object):
     """Normalize a Tensor and restore it later. """
+
     def __init__(self, tensor):
         """tensor is taken as a sample to calculate the mean and std"""
-        self.mean = torch.mean(tensor)
-        self.std = torch.std(tensor)
+        if isinstance(tensor, torch.Tensor):
+            self.mean = torch.mean(tensor)
+            self.std = torch.std(tensor)
+        else:
+            self.mean = tensor
+            self.std = 1.0
 
     def norm(self, tensor):
-        return (tensor - self.mean) / self.std
+        if isinstance(self.mean, torch.Tensor):
+            return (tensor - self.mean) / self.std
+        return tensor
 
     def denorm(self, normed_tensor):
-        return normed_tensor * self.std + self.mean
+        if isinstance(self.mean, torch.Tensor):
+            return normed_tensor * self.std + self.mean
+        return normed_tensor
 
     def state_dict(self):
         return {'mean': self.mean,
@@ -259,6 +261,12 @@ class Normalizer(object):
     def load_state_dict(self, state_dict):
         self.mean = state_dict['mean']
         self.std = state_dict['std']
+    
+    def to(self, device):
+        if isinstance(self.mean, torch.Tensor):
+            self.mean = self.mean.to(device)
+            self.std = self.std.to(device)
+        return self
 
 
 def mae(prediction, target):
@@ -294,6 +302,7 @@ def class_eval(prediction, target):
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
