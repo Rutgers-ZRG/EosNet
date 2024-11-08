@@ -1,6 +1,6 @@
-# Fingerprint Graph Neural Networks
+# EOSNet: Embedded Overlap Structures for Graph Neural Networks
 
-**Note**: This FpGNN package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
+**Note**: This EOSNet package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
 
 ## Change log
 
@@ -52,15 +52,15 @@
   cd fplib ; git checkout fplib_3.1.2
   python3 -m pip install .
   ```
-  For the remaining FpGNN dependecies follow the original instruction. \
+  For the remaining EOSNet dependecies follow the original instruction. \
   **Note**: ~~Currently only `lmax=0` is supported in the C version~~
 
 This package is based on the [Crystal Graph Convolutional Neural Networks]((https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)) that takes an arbitary crystal structure to predict material properties. 
 
 The package provides two major functions:
 
-- Train a FpGNN model with a customized dataset.
-- Predict material properties of new crystals with a pre-trained FpGNN model.
+- Train a EOSNet model with a customized dataset.
+- Predict material properties of new crystals with a pre-trained EOSNet model.
 
 ##  Dependencies
 
@@ -82,7 +82,7 @@ python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2
 ```
 The above environment has been tested stable for both M-chip MacOS and CentOS clusters
 
-## Check your strcuture files before use FpGNN
+## Check your strcuture files before use EOSNet
 
 To catch the erroneous POSCAR file you can use the following `check_fp.py` in the `root_dir`:
 ```python
@@ -179,7 +179,7 @@ if __name__ == "__main__":
 
 ### Define a customized dataset 
 
-To input crystal structures to FpGNN, you will need to define a customized dataset. Note that this is required for both training and predicting. 
+To input crystal structures to EOSNet, you will need to define a customized dataset. Note that this is required for both training and predicting. 
 
 Before defining a customized dataset, you will need:
 
@@ -209,7 +209,7 @@ Before training a new GNN model, you will need to:
 
 - Define a customized dataset at `root_dir` to store the structure-property relations of interest.
 
-Then, in directory `FpGNN`, you can train a GNN model for your customized dataset by:
+Then, in directory `EOSNet`, you can train a GNN model for your customized dataset by:
 
 ```bash
 python3 train.py root_dir
@@ -222,16 +222,16 @@ python3 train.py -h
 ```
 
 ```bash
-python3 train.py root_dir --save_to_disk true --disable-mps --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 | tee FpGNN_log.txt
+python3 train.py root_dir --save_to_disk true --disable-mps --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 | tee EOSNet_log.txt
 ```
 
 To resume from a previous `checkpoint`
 
 ```bash
-python3 train.py root_dir --save_to_disk false --disable-mps --resume ./checkpoint.pth.tar --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 >> FpGNN_log.txt
+python3 train.py root_dir --save_to_disk false --disable-mps --resume ./checkpoint.pth.tar --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 >> EOSNet_log.txt
 ```
 
-After training, you will get three files in `FpGNN` directory.
+After training, you will get three files in `EOSNet` directory.
 
 - `model_best.pth.tar`: stores the GNN model with the best validation accuracy.
 - `checkpoint.pth.tar`: stores the GNN model at the last epoch.
@@ -239,17 +239,17 @@ After training, you will get three files in `FpGNN` directory.
 
 ### Predict material properties with a pre-trained GNN model
 
-In directory `FpGNN`, you can predict the properties of the crystals in `root_dir`:
+In directory `EOSNet`, you can predict the properties of the crystals in `root_dir`:
 
 ```bash
-python predict.py pre-trained.pth.tar root_dir
+python predict.py pre-trained.pth.tar --save_to_disk false --test root_dir
 ```
 
 **Note**: you need to put some random numbers in `id_prop.csv` and the `struct_id`s are the structures you want to predict.
 
 ## How to cite
 
-Please cite the following work if you want to use FpGNN:
+Please cite the following work if you want to use EOSNet:
 
 For CGCNN framework, please cite:
 ```
