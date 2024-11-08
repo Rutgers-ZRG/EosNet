@@ -77,6 +77,24 @@ class ConvLayer(nn.Module):
         return out
 
 
+class ResidualBlock(nn.Module):
+    """
+    Residual block with skip connection
+    """
+    def __init__(self, atom_fea_len, nbr_fea_len):
+        super(ResidualBlock, self).__init__()
+        self.conv = ConvLayer(atom_fea_len, nbr_fea_len)
+        # 1x1 projection for matching dimensions if needed
+        self.projection = None
+        
+    def forward(self, x, nbr_fea, nbr_fea_idx):
+        identity = x
+        out = self.conv(x, nbr_fea, nbr_fea_idx)
+        if self.projection is not None:
+            identity = self.projection(identity)
+        return out + identity
+
+
 class CrystalGraphConvNet(nn.Module):
     """
     Create a crystal graph convolutional neural network for predicting total
@@ -106,24 +124,41 @@ class CrystalGraphConvNet(nn.Module):
         """
         super(CrystalGraphConvNet, self).__init__()
         self.classification = classification
+        
+        # Initial embedding
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
-        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len,
-                                    nbr_fea_len=nbr_fea_len)
-                                    for _ in range(n_conv)])
+        
+        # Residual blocks for convolution layers
+        self.res_blocks = nn.ModuleList([
+            ResidualBlock(atom_fea_len=atom_fea_len, nbr_fea_len=nbr_fea_len)
+            for _ in range(n_conv)
+        ])
+        
+        # Global skip connection
+        self.skip_projection = nn.Linear(atom_fea_len, atom_fea_len)
+        
+        # Transition from conv to fc
         self.conv_to_fc = nn.Linear(atom_fea_len, h_fea_len)
         self.conv_to_fc_softplus = nn.Softplus()
+        
+        # FC layers with residual connections
         if n_h > 1:
-            self.fcs = nn.ModuleList([nn.Linear(h_fea_len, h_fea_len)
-                                      for _ in range(n_h-1)])
-            self.softpluses = nn.ModuleList([nn.Softplus()
-                                             for _ in range(n_h-1)])
+            self.fcs = nn.ModuleList()
+            self.fc_projections = nn.ModuleList()
+            self.softpluses = nn.ModuleList()
+            
+            for _ in range(n_h-1):
+                self.fcs.append(nn.Linear(h_fea_len, h_fea_len))
+                self.fc_projections.append(nn.Linear(h_fea_len, h_fea_len))
+                self.softpluses.append(nn.Softplus())
+        
+        # Output layer
         if self.classification:
             self.fc_out = nn.Linear(h_fea_len, 2)
-        else:
-            self.fc_out = nn.Linear(h_fea_len, 1)
-        if self.classification:
             self.logsoftmax = nn.LogSoftmax(dim=1)
             self.dropout = nn.Dropout()
+        else:
+            self.fc_out = nn.Linear(h_fea_len, 1)
 
     def forward(self, atom_fea, nbr_fea, nbr_fea_idx, crystal_atom_idx):
         """
@@ -152,17 +187,39 @@ class CrystalGraphConvNet(nn.Module):
           Atom hidden features after convolution
 
         """
+        # Initial embedding
         atom_fea = self.embedding(atom_fea)
-        for conv_func in self.convs:
-            atom_fea = conv_func(atom_fea, nbr_fea, nbr_fea_idx)
+        
+        # Save for global skip connection
+        embedding_skip = self.skip_projection(atom_fea)
+        
+        # Apply conv layers with residual connections
+        for res_block in self.res_blocks:
+            atom_fea = res_block(atom_fea, nbr_fea, nbr_fea_idx)
+        
+        # Add global skip connection
+        atom_fea = atom_fea + embedding_skip
+        
+        # Pooling
         crys_fea = self.pooling(atom_fea, crystal_atom_idx)
+        
+        # Transition to fc layers
         crys_fea = self.conv_to_fc(self.conv_to_fc_softplus(crys_fea))
         crys_fea = self.conv_to_fc_softplus(crys_fea)
+        
+        # Apply dropout for classification
         if self.classification:
             crys_fea = self.dropout(crys_fea)
-        if hasattr(self, 'fcs') and hasattr(self, 'softpluses'):
-            for fc, softplus in zip(self.fcs, self.softpluses):
+        
+        # FC layers with residual connections
+        if hasattr(self, 'fcs'):
+            for fc, softplus, projection in zip(self.fcs, self.softpluses, self.fc_projections):
+                identity = crys_fea
                 crys_fea = softplus(fc(crys_fea))
+                identity = projection(identity)
+                crys_fea = crys_fea + identity
+        
+        # Output
         out = self.fc_out(crys_fea)
         if self.classification:
             out = self.logsoftmax(out)

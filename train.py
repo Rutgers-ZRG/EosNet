@@ -19,6 +19,7 @@ from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 from torch.optim.lr_scheduler import StepLR, SequentialLR, LinearLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
 from torch.multiprocessing import set_sharing_strategy, get_context
 
 from fpcnn.data import IdTargetData, StructData
@@ -250,7 +251,8 @@ def main():
 
     warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs)
     # main_scheduler = StepLR(optimizer, step_size=100, gamma=0.1)
-    main_scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
+    # main_scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
+    main_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - args.warmup_epochs, eta_min=1e-10)
     # main_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, threshold=0.01, threshold_mode='abs')
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[args.warmup_epochs])
     for epoch in range(args.start_epoch, args.epochs):
