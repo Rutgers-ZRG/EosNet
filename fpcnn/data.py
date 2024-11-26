@@ -157,11 +157,12 @@ def collate_pool(dataset_list):
 
     dataset_list: list of tuples for each data point.
       For IdTargetData: (struct_id, target)
-      For StructData: ((atom_fea, nbr_fea, nbr_fea_idx), target, struct_id)
+      For StructData: ((atom_fea, nbr_fea, nbr_fea_idx, angle_fea), target, struct_id)
 
       atom_fea: torch.Tensor shape (n_i, atom_fea_len)
       nbr_fea: torch.Tensor shape (n_i, M, nbr_fea_len)
       nbr_fea_idx: torch.LongTensor shape (n_i, M)
+      angle_fea: torch.Tensor shape (n_i, num_angles, angle_fea_len)
       target: torch.Tensor shape (1, )
       struct_id: str or int
 
@@ -180,9 +181,11 @@ def collate_pool(dataset_list):
         Bond features of each atom's M neighbors
       batch_nbr_fea_idx: torch.LongTensor shape (N, M)
         Indices of M neighbors of each atom
+      batch_angle_fea: torch.Tensor shape (N, num_angles, angle_fea_len)
+        Angle features of each atom's M neighbors
       crystal_atom_idx: list of torch.LongTensor of length N0
         Mapping from the crystal idx to atom idx
-      target: torch.Tensor shape (N, 1)
+      batch_target: torch.Tensor shape (N, 1)
         Target value for prediction
       batch_struct_ids: list
     """
@@ -193,28 +196,50 @@ def collate_pool(dataset_list):
             batch_target.append(torch.tensor([target], dtype=torch.float))
             batch_struct_ids.append(struct_id)
         return torch.cat(batch_target, dim=0), batch_struct_ids
+    
     # StructData
     elif isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 3:
         batch_atom_fea, batch_nbr_fea, batch_nbr_fea_idx = [], [], []
-        crystal_atom_idx, batch_target = [], []
+        batch_angle_fea = []
+        crystal_atom_idx = []
+        batch_target = []
         batch_struct_ids = []
+        
         base_idx = 0
-        for (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id in dataset_list:
-            n_i = atom_fea.shape[0]  # number of atoms for this crystal
+        for (atom_fea, nbr_fea, nbr_fea_idx, angle_fea), target, struct_id in dataset_list:
+            n_i = atom_fea.shape[0]
+            
             batch_atom_fea.append(atom_fea)
             batch_nbr_fea.append(nbr_fea)
-            batch_nbr_fea_idx.append(nbr_fea_idx+base_idx)
-            new_idx = torch.LongTensor(np.arange(n_i)+base_idx)
-            crystal_atom_idx.append(new_idx)
+            batch_nbr_fea_idx.append(nbr_fea_idx + base_idx)
+            if angle_fea is not None:
+                batch_angle_fea.append(angle_fea)
+            
+            crystal_atom_idx.append(torch.LongTensor(np.arange(n_i) + base_idx))
             batch_target.append(torch.tensor([target], dtype=torch.float))
             batch_struct_ids.append(struct_id)
+            
             base_idx += n_i
-        return (torch.cat(batch_atom_fea, dim=0),
-                torch.cat(batch_nbr_fea, dim=0),
-                torch.cat(batch_nbr_fea_idx, dim=0),
-                crystal_atom_idx),\
-            torch.cat(batch_target, dim=0),\
-            batch_struct_ids
+        
+        # Stack features
+        batch_atom_fea = torch.cat(batch_atom_fea, dim=0)
+        batch_nbr_fea = torch.cat(batch_nbr_fea, dim=0)
+        batch_nbr_fea_idx = torch.cat(batch_nbr_fea_idx, dim=0)
+        if len(batch_angle_fea) > 0:
+            batch_angle_fea = torch.cat(batch_angle_fea, dim=0)
+        else:
+            batch_angle_fea = None
+            
+        # Stack targets
+        batch_target = torch.stack(batch_target)
+        
+        return (batch_atom_fea,
+                batch_nbr_fea,
+                batch_nbr_fea_idx,
+                crystal_atom_idx,
+                batch_angle_fea), \
+                batch_target, \
+                batch_struct_ids
     else:
         raise ValueError("Unsupported dataset type")
 
@@ -262,6 +287,41 @@ class GaussianDistance(object):
         return np.exp(-(distances[..., np.newaxis] - self.filter)**2 /
                       self.var**2)
 
+class FourierBasis:
+    """Fourier basis expansion for angle features"""
+    def __init__(self, num_basis, cutoff):
+        """
+        Args:
+            num_basis: int, number of basis functions (should be nx//2)
+            cutoff: float, cutoff radius
+        """
+        if num_basis % 2 != 1:
+            num_basis = num_basis + 1
+        self.num_basis = num_basis
+        self.cutoff = cutoff
+        self.order = (num_basis - 1) // 2
+        
+    def expand(self, angles):
+        """
+        Expand angles using Fourier basis.
+        
+        Args:
+            angles (np.ndarray): Array of angles in radians [n_angles]
+            
+        Returns:
+            features (np.ndarray): Expanded features [n_angles, 2*order+1]
+        """
+        features = []
+        # Add constant term (order 0)
+        features.append(np.ones_like(angles))
+        
+        # Add sin and cos terms for each order
+        for m in range(1, self.order + 1):
+            features.append(np.cos(m * angles))
+            features.append(np.sin(m * angles))
+            
+        return np.stack(features, axis=1)
+
 class IdTargetData(Dataset):
     """ 
     A simple dataset to load just the struct_id and target from the dataset's id_prop.csv.
@@ -297,6 +357,96 @@ class IdTargetData(Dataset):
     def __getitem__(self, idx):
         struct_id, target = self.id_prop_data[idx]
         return struct_id, float(target)
+
+def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None):
+    """
+    Get neighbor information using ASE's NeighborList.
+    
+    Args:
+        atoms: ASE Atoms object
+        radius: Cutoff radius for neighbor search
+        max_num_nbr: Maximum number of neighbors to consider
+        struct_id: Optional structure identifier for warnings
+        
+    Returns:
+        nbr_indices: Array of neighbor indices [n_atoms, max_num_nbr]
+        nbr_distances: Array of distances [n_atoms, max_num_nbr]
+        displacement_vectors: Array of displacement vectors [n_atoms, max_num_nbr, 3]
+    """
+    from ase.neighborlist import NeighborList
+    # Create neighbor list
+    nl = NeighborList([radius/2] * len(atoms), self_interaction=True, bothways=True)
+    nl.update(atoms)
+    cell = atoms.get_cell(complete=True)
+    positions = atoms.get_positions()
+    n_atoms = len(atoms)
+    
+    # Initialize lists to store neighbor information
+    nbr_idx, nbr_dis, disp = [], [], []
+    
+    # First pass to get all neighbors
+    for i in range(n_atoms):
+        indices, offsets = nl.get_neighbors(i)
+        local_nbr_idx, local_nbr_dis, local_disp = [], [], []
+        
+        for j, offset in zip(indices, offsets):
+            # Skip the center atom
+            if j == i and np.allclose(offset, 0):
+                continue
+                
+            disp_vec = positions[j] - positions[i] + np.dot(cell, offset)
+            dist = np.linalg.norm(disp_vec)
+            
+            local_nbr_idx.append(j)
+            local_nbr_dis.append(dist)
+            local_disp.append(disp_vec)
+        
+        # Sort neighbors by distance
+        combined = list(zip(local_nbr_idx, local_nbr_dis, local_disp))
+        combined_sorted = sorted(combined, key=lambda x: x[1])
+        idx_sorted, dis_sorted, disp_sorted = zip(*combined_sorted) if combined_sorted else ([], [], [])
+        
+        nbr_idx.append(list(idx_sorted))
+        nbr_dis.append(list(dis_sorted))
+        disp.append(list(disp_sorted))
+    
+    # Second pass to trim and pad
+    trim_nbr_idx, trim_nbr_dis, trim_disp = [], [], []
+    
+    for i in range(n_atoms):
+        n_nbr = len(nbr_idx[i])
+        
+        if n_nbr < max_num_nbr:
+            if struct_id:
+                warnings.warn('{} not find enough neighbors to build graph. '
+                              'If it happens frequently, consider increase '
+                              'radius.'.format(struct_id))
+            
+            # Get the last valid neighbor for padding
+            last_idx = nbr_idx[i][-1] if nbr_idx[i] else 0
+            last_dis = nbr_dis[i][-1] if nbr_dis[i] else radius + 1.0
+            last_disp = disp[i][-1] if disp[i] else np.zeros(3)
+            
+            # Pad with the last valid neighbor
+            local_nbr_idx = nbr_idx[i] + [last_idx] * (max_num_nbr - n_nbr)
+            local_nbr_dis = nbr_dis[i] + [last_dis] * (max_num_nbr - n_nbr)
+            local_disp = disp[i] + [last_disp] * (max_num_nbr - n_nbr)
+        else:
+            # Take only max_num_nbr neighbors
+            local_nbr_idx = nbr_idx[i][:max_num_nbr]
+            local_nbr_dis = nbr_dis[i][:max_num_nbr]
+            local_disp = disp[i][:max_num_nbr]
+        
+        trim_nbr_idx.append(local_nbr_idx)
+        trim_nbr_dis.append(local_nbr_dis)
+        trim_disp.append(local_disp)
+    
+    # Convert to numpy arrays
+    nbr_indices = np.array(trim_nbr_idx)
+    nbr_distances = np.array(trim_nbr_dis)
+    displacement_vectors = np.array(trim_disp)
+    
+    return nbr_indices, nbr_distances, displacement_vectors
 
 class StructData(Dataset):
     """
@@ -362,12 +512,14 @@ class StructData(Dataset):
                  lmax=0,
                  batch_size=64,
                  drop_last=False,
-                 save_to_disk=False):
+                 save_to_disk=False,
+                 update_bond=False):
         self.root_dir = root_dir
         self.id_prop_data = id_prop_data
         self.max_num_nbr, self.radius = max_num_nbr, radius
         self.nx = nx
         self.lmax = lmax
+        self.update_bond = update_bond
         self.save_to_disk = save_to_disk
         assert lmax == 0, 'p-orbitals is not supported at this time!'
         assert nx >= comb(max_num_nbr, 2), 'nx is too small for the given max_num_nbr!'
@@ -386,7 +538,11 @@ class StructData(Dataset):
             self.load_dataset()
         else:
             self.processed_data = None
-
+        
+        # Add Fourier basis only if bond updates are needed
+        if self.update_bond:
+            self.fourier_basis = FourierBasis(num_basis=nx//2, cutoff=radius)
+        
     def __len__(self):
         return len(self.id_prop_data)
 
@@ -459,9 +615,28 @@ class StructData(Dataset):
         return fp
 
     def process_structure(self, crystal, struct_id):
-        """Processes a single structure and returns its features."""
-        # One-hot encoding
+        """
+        Convert structure into features.
+        
+        Args:
+            crystal: ASE Atoms object
+            struct_id: Structure identifier for warnings
+            
+        Returns:
+            atom_fea: Atom features [n_atoms, atom_fea_len]
+            nbr_fea: Bond features [n_atoms, max_num_nbr, bond_fea_len]
+            nbr_fea_idx: Neighbor indices [n_atoms, max_num_nbr]
+            angle_fea: Angle features [n_atoms, num_angles, angle_fea_len]
+        """
+        # Convert to ASE atoms
         atoms = crystal.to_ase_atoms()
+        
+        # Get neighbor information
+        nbr_indices, nbr_distances, displacement_vectors = get_neighbor_info(
+            atoms, self.radius, self.max_num_nbr, struct_id=struct_id
+        )
+        
+        # One-hot encoding
         chem_nums = list(atoms.numbers)
         max_atomic_number = max(max(chem_nums), 112)
         one_hot_encodings = []
@@ -471,6 +646,7 @@ class StructData(Dataset):
             one_hot_encodings.append(encoding)
         one_hot_encodings = np.array(one_hot_encodings, dtype=np.int32)
         
+        # Fingerprint features
         comb_n_nbr = comb(self.max_num_nbr, 2)
         cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
         fp_mat = self.get_fp_mat(cell_file)
@@ -481,30 +657,46 @@ class StructData(Dataset):
         # atom_fea = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
         # atom_fea = one_hot_encodings
         
-        all_nbrs = crystal.get_all_neighbors(self.radius, include_index=True)
-        all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
-        nbr_fea_idx, nbr_fea = [], []
-        for nbr in all_nbrs:
-            if len(nbr) < self.max_num_nbr:
-                warnings.warn('{} not find enough neighbors to build graph. '
-                              'If it happens frequently, consider increase '
-                              'radius.'.format(struct_id))
-                nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
-                                   [0] * (self.max_num_nbr - len(nbr)))
-                nbr_fea.append(list(map(lambda x: x[1], nbr)) +
-                               [self.radius + 1.] * (self.max_num_nbr -
-                                                     len(nbr)))
-            else:
-                nbr_fea_idx.append(list(map(lambda x: x[2],
-                                            nbr[:self.max_num_nbr])))
-                nbr_fea.append(list(map(lambda x: x[1],
-                                        nbr[:self.max_num_nbr])))
-        nbr_fea_idx, nbr_fea = np.array(nbr_fea_idx), np.array(nbr_fea)
-        nbr_fea = self.gdf.expand(nbr_fea)
-        nbr_fea[np.abs(nbr_fea) < 1.0e-10] = 0.0
-        nbr_fea = nbr_fea / np.linalg.norm(nbr_fea, axis=-1, keepdims=True)
-
-        return atom_fea, nbr_fea, nbr_fea_idx
+        # Process bond features using GaussianDistance
+        nbr_fea = self.gdf.expand(nbr_distances)
+        
+        # Calculate angle features only if bond updates are needed
+        if self.update_bond:
+            angle_features = []
+            
+            for i in range(len(atoms)):
+                vectors = displacement_vectors[i]
+                bond_lengths = np.linalg.norm(vectors, axis=1)
+                normalized_vectors = np.divide(vectors, 
+                                            bond_lengths[:,np.newaxis], 
+                                            where=bond_lengths[:,np.newaxis]!=0)
+                
+                # Calculate angles between all pairs of bonds
+                angles = []
+                for j in range(self.max_num_nbr):
+                    for k in range(j + 1, self.max_num_nbr):
+                        if bond_lengths[j] > 0 and bond_lengths[k] > 0:
+                            cos_angle = np.clip(
+                                np.dot(normalized_vectors[j], normalized_vectors[k]),
+                                -1.0, 1.0
+                            )
+                            angle = np.arccos(cos_angle)
+                        else:
+                            angle = 0.0
+                        angles.append(angle)
+                
+                angles = np.array(angles)  # [num_angles]
+                if not hasattr(self, 'fourier_basis'):
+                    self.fourier_basis = FourierBasis(num_basis=self.nx//2, cutoff=self.radius)
+                angle_fea = self.fourier_basis.expand(angles)
+                angle_features.append(angle_fea)
+            
+            # Stack angle features
+            angle_fea = np.stack(angle_features, axis=0)
+        else:
+            angle_fea = None
+        
+        return atom_fea, nbr_fea, nbr_indices, angle_fea
     
     # @lru_cache(maxsize=None)
     def __getitem__(self, idx):
@@ -516,19 +708,23 @@ class StructData(Dataset):
         atom_fea = torch.Tensor(item['atom_fea'])
         nbr_fea = torch.Tensor(item['nbr_fea'])
         nbr_fea_idx = torch.LongTensor(item['nbr_fea_idx'])
-        target = torch.Tensor([item['target']])
         
-        return (atom_fea, nbr_fea, nbr_fea_idx), target, item['struct_id']
+        # Handle None case for angle_fea
+        angle_fea = torch.Tensor(item['angle_fea']) if item['angle_fea'] is not None else None
+        target = item['target']
+        
+        return (atom_fea, nbr_fea, nbr_fea_idx, angle_fea), target, item['struct_id']
 
     def process_item(self, idx):
         struct_id, target = self.id_prop_data[idx]
         cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
         crystal = Structure.from_file(cell_file)
-        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+        atom_fea, nbr_fea, nbr_fea_idx, angle_fea = self.process_structure(crystal, struct_id)
         return {
             'atom_fea': atom_fea,
             'nbr_fea': nbr_fea,
             'nbr_fea_idx': nbr_fea_idx,
+            'angle_fea': angle_fea,
             'target': float(target),
             'struct_id': struct_id
         }
