@@ -19,14 +19,14 @@ from torch.autograd import Variable
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 from torch.optim.lr_scheduler import StepLR, SequentialLR, LinearLR
-from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.multiprocessing import set_sharing_strategy, get_context
 
 from fpcnn.data import IdTargetData, StructData
 from fpcnn.data import collate_pool, get_train_val_test_loader
-from fpcnn.model import CrystalGraphConvNet
+from fpcnn.model import EosNet
 
-parser = argparse.ArgumentParser(description='FpGNN: A Fingerprint Embedded Graph Neural Network')
+parser = argparse.ArgumentParser(description='EOSNet: Embedded Overlap Structures for Graph Neural Networks')
 # Explicitly add arguments for data options
 parser.add_argument('root_dir', metavar='ROOT_DIR', type=str,
                     help='Path to the root directory')
@@ -56,6 +56,8 @@ parser.add_argument('--task', choices=['regression', 'classification'],
                     default='regression',
                     help='complete a regression or '
                     'classification task (default: regression)')
+parser.add_argument('--update-bond', action='store_true',
+                    help='Enable bond feature updates in the model')
 parser.add_argument('--disable-cuda', action='store_true',
                     help='Disable CUDA')
 parser.add_argument('--disable-mps', action='store_true',
@@ -156,6 +158,7 @@ def main():
                                 lmax=args.lmax,
                                 batch_size=args.batch_size,
                                 drop_last=args.drop_last,
+                                update_bond=args.update_bond,
                                 save_to_disk=args.save_to_disk)
     collate_fn = collate_pool
     class_weights, train_loader, val_loader, test_loader = get_train_val_test_loader(
@@ -197,13 +200,20 @@ def main():
     structures, _, _ = struct_dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
     nbr_fea_len = structures[1].shape[-1]
-    model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
-                                atom_fea_len=args.atom_fea_len,
-                                n_conv=args.n_conv,
-                                h_fea_len=args.h_fea_len,
-                                n_h=args.n_h,
-                                classification=True if args.task ==
-                                                       'classification' else False)
+    angle_fea_len = structures[3].shape[-1] if structures[3] is not None else 0
+    
+    model = EosNet(
+        orig_atom_fea_len=orig_atom_fea_len,
+        nbr_fea_len=nbr_fea_len,
+        angle_fea_len=angle_fea_len,
+        atom_fea_len=args.atom_fea_len,
+        n_conv=args.n_conv,
+        h_fea_len=args.h_fea_len,
+        n_h=args.n_h,
+        max_num_nbr=args.max_num_nbr,
+        update_bond=args.update_bond,
+        classification=True if args.task == 'classification' else False
+    )
 
     if args.cuda:
         device = torch.device("cuda")
@@ -317,19 +327,22 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
             input_var = (Variable(input[0].to("cuda", non_blocking=True)),
                          Variable(input[1].to("cuda", non_blocking=True)),
                          input[2].to("cuda", non_blocking=True),
-                         [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
-            target = target.to("cuda", non_blocking=True)
+                         [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]],
+                         input[4].to("cuda", non_blocking=True) \
+                         if (args.update_bond and input[4] is not None) else None)
         elif args.mps:
             input_var = (Variable(input[0].to("mps", non_blocking=False)),
                          Variable(input[1].to("mps", non_blocking=False)),
                          input[2].to("mps", non_blocking=False),
-                         [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
-            target = target.to("mps", non_blocking=False)
+                         [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]],
+                         input[4].to("mps", non_blocking=False) \
+                         if (args.update_bond and input[4] is not None) else None)
         else:
             input_var = (Variable(input[0]),
                          Variable(input[1]),
                          input[2],
-                         input[3])
+                         input[3],
+                         input[4] if args.update_bond else None)
         target = target.view(-1, 1)
         target = target.to(device)
         # normalize target
@@ -429,21 +442,26 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                 input_var = (Variable(input[0].to("cuda", non_blocking=True)),
                              Variable(input[1].to("cuda", non_blocking=True)),
                              input[2].to("cuda", non_blocking=True),
-                             [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
+                             [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]],
+                             input[4].to("cuda", non_blocking=True) \
+                             if (args.update_bond and input[4] is not None) else None)
                 target = target.to("cuda", non_blocking=True)
         elif args.mps:
             with torch.no_grad():
                 input_var = (Variable(input[0].to("mps", non_blocking=False)),
                              Variable(input[1].to("mps", non_blocking=False)),
                              input[2].to("mps", non_blocking=False),
-                             [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
+                             [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]],
+                             input[4].to("mps", non_blocking=False) \
+                             if (args.update_bond and input[4] is not None) else None)
                 target = target.to("mps", non_blocking=False)
         else:
             with torch.no_grad():
                 input_var = (Variable(input[0]),
                              Variable(input[1]),
                              input[2],
-                             input[3])
+                             input[3],
+                             input[4] if args.update_bond else None)
         target = target.view(-1, 1)
         target = target.to(device)
         if args.task == 'regression':

@@ -14,6 +14,11 @@
 - Add `save_to_disk` option, `disable_mps` option and FP related arg options
 - Introduce `IdTargetData` class to do efficient sampling on the dataset
 - Update `collate_pool` to handle both `IdTargetData` and `StructData` type dataset
+- Add residual and skip connection when called in `n_conv` loops
+- Use `CosineAnnealingLR` instead of linear LR schedulers
+- Use `get_neighbor_info` to correctly handle padding of neighbors with given cutoff
+- Add `--update-bond` option to use `BondConvLayer` to update `nbr_fea`
+- `CrystalGraphConvNet` has been completely restructured and renamed to `EosNet`
 - Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/Rutgers-ZRG/libfp) to improve speed. \
   (Optional) Modify the `setup.py` in `fplib` if you use `conda` to install LAPACK:
   ```python
