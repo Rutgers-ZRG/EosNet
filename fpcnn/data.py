@@ -86,8 +86,7 @@ def get_train_val_test_loader(dataset, classification=False,
         valid_size = int(val_ratio * total_size)
     if classification:
         train_indices = indices[:train_size]
-        train_targets = [np.array(dataset[i][1].numpy(),
-                                  dtype=np.int32).item() for i in train_indices]
+        train_targets = [int(dataset[i][1]) for i in train_indices]
         class_weights = compute_class_weight(
             class_weight = 'balanced',
             classes = np.unique(train_targets),
