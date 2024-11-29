@@ -149,9 +149,8 @@ def get_train_val_test_loader(dataset, classification=False,
 
 def collate_pool(dataset_list):
     """
-    Collate a list of data and return a batch for predicting crystal
-    properties.
-
+    Collate a list of data and return a batch for predicting crystal properties.
+    
     Parameters
     ----------
 
@@ -200,20 +199,17 @@ def collate_pool(dataset_list):
     # StructData
     elif isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 3:
         batch_atom_fea, batch_nbr_fea, batch_nbr_fea_idx = [], [], []
-        batch_angle_fea = []
         crystal_atom_idx = []
         batch_target = []
         batch_struct_ids = []
         
         base_idx = 0
-        for (atom_fea, nbr_fea, nbr_fea_idx, angle_fea), target, struct_id in dataset_list:
+        for (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id in dataset_list:
             n_i = atom_fea.shape[0]
             
             batch_atom_fea.append(atom_fea)
             batch_nbr_fea.append(nbr_fea)
             batch_nbr_fea_idx.append(nbr_fea_idx + base_idx)
-            if angle_fea is not None:
-                batch_angle_fea.append(angle_fea)
             
             crystal_atom_idx.append(torch.LongTensor(np.arange(n_i) + base_idx))
             batch_target.append(torch.tensor([target], dtype=torch.float))
@@ -225,10 +221,6 @@ def collate_pool(dataset_list):
         batch_atom_fea = torch.cat(batch_atom_fea, dim=0)
         batch_nbr_fea = torch.cat(batch_nbr_fea, dim=0)
         batch_nbr_fea_idx = torch.cat(batch_nbr_fea_idx, dim=0)
-        if len(batch_angle_fea) > 0:
-            batch_angle_fea = torch.cat(batch_angle_fea, dim=0)
-        else:
-            batch_angle_fea = None
             
         # Stack targets
         batch_target = torch.stack(batch_target)
@@ -236,8 +228,7 @@ def collate_pool(dataset_list):
         return (batch_atom_fea,
                 batch_nbr_fea,
                 batch_nbr_fea_idx,
-                crystal_atom_idx,
-                batch_angle_fea), \
+                crystal_atom_idx), \
                 batch_target, \
                 batch_struct_ids
     else:
@@ -287,40 +278,6 @@ class GaussianDistance(object):
         return np.exp(-(distances[..., np.newaxis] - self.filter)**2 /
                       self.var**2)
 
-class FourierBasis:
-    """Fourier basis expansion for angle features"""
-    def __init__(self, num_basis, cutoff):
-        """
-        Args:
-            num_basis: int, number of basis functions (should be nx//2)
-            cutoff: float, cutoff radius
-        """
-        if num_basis % 2 != 1:
-            num_basis = num_basis + 1
-        self.num_basis = num_basis
-        self.cutoff = cutoff
-        self.order = (num_basis - 1) // 2
-        
-    def expand(self, angles):
-        """
-        Expand angles using Fourier basis.
-        
-        Args:
-            angles (np.ndarray): Array of angles in radians [n_angles]
-            
-        Returns:
-            features (np.ndarray): Expanded features [n_angles, 2*order+1]
-        """
-        features = []
-        # Add constant term (order 0)
-        features.append(np.ones_like(angles))
-        
-        # Add sin and cos terms for each order
-        for m in range(1, self.order + 1):
-            features.append(np.cos(m * angles))
-            features.append(np.sin(m * angles))
-            
-        return np.stack(features, axis=1)
 
 class IdTargetData(Dataset):
     """ 
@@ -512,14 +469,12 @@ class StructData(Dataset):
                  lmax=0,
                  batch_size=64,
                  drop_last=False,
-                 save_to_disk=False,
-                 update_bond=False):
+                 save_to_disk=False):
         self.root_dir = root_dir
         self.id_prop_data = id_prop_data
         self.max_num_nbr, self.radius = max_num_nbr, radius
         self.nx = nx
         self.lmax = lmax
-        self.update_bond = update_bond
         self.save_to_disk = save_to_disk
         assert lmax == 0, 'p-orbitals is not supported at this time!'
         assert nx >= comb(max_num_nbr, 2), 'nx is too small for the given max_num_nbr!'
@@ -538,14 +493,10 @@ class StructData(Dataset):
             self.load_dataset()
         else:
             self.processed_data = None
-        
-        # Add Fourier basis only if bond updates are needed
-        if self.update_bond:
-            self.fourier_basis = FourierBasis(num_basis=nx//2, cutoff=radius)
-        
+
     def __len__(self):
         return len(self.id_prop_data)
-
+    
     def read_types(self, cell_file):
         buff = []
         with open(cell_file) as f:
@@ -626,7 +577,6 @@ class StructData(Dataset):
             atom_fea: Atom features [n_atoms, atom_fea_len]
             nbr_fea: Bond features [n_atoms, max_num_nbr, bond_fea_len]
             nbr_fea_idx: Neighbor indices [n_atoms, max_num_nbr]
-            angle_fea: Angle features [n_atoms, num_angles, angle_fea_len]
         """
         # Convert to ASE atoms
         atoms = crystal.to_ase_atoms()
@@ -660,45 +610,8 @@ class StructData(Dataset):
         # Process bond features using GaussianDistance
         nbr_fea = self.gdf.expand(nbr_distances)
         
-        # Calculate angle features only if bond updates are needed
-        if self.update_bond:
-            angle_features = []
-            
-            for i in range(len(atoms)):
-                vectors = displacement_vectors[i]
-                bond_lengths = np.linalg.norm(vectors, axis=1)
-                normalized_vectors = np.divide(vectors, 
-                                            bond_lengths[:,np.newaxis], 
-                                            where=bond_lengths[:,np.newaxis]!=0)
-                
-                # Calculate angles between all pairs of bonds
-                angles = []
-                for j in range(self.max_num_nbr):
-                    for k in range(j + 1, self.max_num_nbr):
-                        if bond_lengths[j] > 0 and bond_lengths[k] > 0:
-                            cos_angle = np.clip(
-                                np.dot(normalized_vectors[j], normalized_vectors[k]),
-                                -1.0, 1.0
-                            )
-                            angle = np.arccos(cos_angle)
-                        else:
-                            angle = 0.0
-                        angles.append(angle)
-                
-                angles = np.array(angles)  # [num_angles]
-                if not hasattr(self, 'fourier_basis'):
-                    self.fourier_basis = FourierBasis(num_basis=self.nx//2, cutoff=self.radius)
-                angle_fea = self.fourier_basis.expand(angles)
-                angle_features.append(angle_fea)
-            
-            # Stack angle features
-            angle_fea = np.stack(angle_features, axis=0)
-        else:
-            angle_fea = None
-        
-        return atom_fea, nbr_fea, nbr_indices, angle_fea
+        return atom_fea, nbr_fea, nbr_indices
     
-    # @lru_cache(maxsize=None)
     def __getitem__(self, idx):
         if self.processed_data is not None:
             item = self.processed_data[idx]
@@ -708,23 +621,19 @@ class StructData(Dataset):
         atom_fea = torch.Tensor(item['atom_fea'])
         nbr_fea = torch.Tensor(item['nbr_fea'])
         nbr_fea_idx = torch.LongTensor(item['nbr_fea_idx'])
+        target = torch.Tensor([item['target']])
         
-        # Handle None case for angle_fea
-        angle_fea = torch.Tensor(item['angle_fea']) if item['angle_fea'] is not None else None
-        target = item['target']
-        
-        return (atom_fea, nbr_fea, nbr_fea_idx, angle_fea), target, item['struct_id']
+        return (atom_fea, nbr_fea, nbr_fea_idx), target, item['struct_id']
 
     def process_item(self, idx):
         struct_id, target = self.id_prop_data[idx]
         cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
         crystal = Structure.from_file(cell_file)
-        atom_fea, nbr_fea, nbr_fea_idx, angle_fea = self.process_structure(crystal, struct_id)
+        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
         return {
             'atom_fea': atom_fea,
             'nbr_fea': nbr_fea,
             'nbr_fea_idx': nbr_fea_idx,
-            'angle_fea': angle_fea,
             'target': float(target),
             'struct_id': struct_id
         }
