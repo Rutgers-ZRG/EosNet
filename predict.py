@@ -114,7 +114,6 @@ def main():
                          var=model_args.var,
                          nx=model_args.nx,
                          lmax=model_args.lmax,
-                         update_bond=model_args.update_bond,
                          save_to_disk=args.save_to_disk)
 
     def ordered_collate(data_list):
@@ -134,19 +133,16 @@ def main():
     structures, _, _ = dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
     nbr_fea_len = structures[1].shape[-1]
-    angle_fea_len = structures[3].shape[-1] if structures[3] is not None else 0
 
     model = EosNet(
         orig_atom_fea_len=orig_atom_fea_len,
         nbr_fea_len=nbr_fea_len,
-        angle_fea_len=angle_fea_len,
         atom_fea_len=model_args.atom_fea_len,
-        n_conv=model_args.n_conv,
         h_fea_len=model_args.h_fea_len,
+        n_conv=model_args.n_conv,
         n_h=model_args.n_h,
-        max_num_nbr=model_args.max_num_nbr,
         update_bond=model_args.update_bond,
-        classification=True if args.task == 'classification' else False
+        classification=True if model_args.task == 'classification' else False
     )
     
     # Initialize normalizer
@@ -199,22 +195,17 @@ def validate(val_loader, model, normalizer, test=False):
                 input_var = (Variable(input[0].to("cuda", non_blocking=True)),
                             Variable(input[1].to("cuda", non_blocking=True)),
                             input[2].to("cuda", non_blocking=True),
-                            [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]],
-                            input[4].to("cuda", non_blocking=True) \
-                            if (model_args.update_bond and input[4] is not None) else None)
+                            [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
             elif args.mps:
                 input_var = (Variable(input[0].to("mps", non_blocking=False)),
                             Variable(input[1].to("mps", non_blocking=False)),
                             input[2].to("mps", non_blocking=False),
-                            [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]],
-                            input[4].to("mps", non_blocking=False) \
-                            if (model_args.update_bond and input[4] is not None) else None)
+                            [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
             else:
                 input_var = (Variable(input[0]),
                             Variable(input[1]),
                             input[2],
-                            input[3],
-                            input[4] if model_args.update_bond else None)
+                            input[3])
 
         # compute output
         output = model(*input_var)
