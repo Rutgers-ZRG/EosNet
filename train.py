@@ -118,6 +118,16 @@ parser.add_argument('--n-conv', default=3, type=int, metavar='N',
                     help='number of conv layers')
 parser.add_argument('--n-h', default=1, type=int, metavar='N',
                     help='number of hidden layers after pooling')
+parser.add_argument('--resnet', default=True, type=lambda x: (str(x).lower() == 'true'),
+                    help='Use residual connections (default: True)')
+parser.add_argument('--attention', default=False, type=lambda x: (str(x).lower() == 'true'),
+                    help='Use attention readout (default: False)')
+parser.add_argument('--hidden-dim', default=64, type=int,
+                    help='Hidden dimension for attention readout (default: 64)')
+parser.add_argument('--num-heads', default=None, type=int,
+                    help='Number of attention heads (default: atom_fea_len // hidden_dim)')
+parser.add_argument('--dropout', default=0.1, type=float,
+                    help='Dropout rate (default: 0.1)')
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -146,24 +156,11 @@ def main():
     id_target_dataset = IdTargetData(root_dir=args.root_dir,
                                      random_seed=args.random_seed)
     
-    # load StructData
-    struct_dataset = StructData(id_prop_data=id_target_dataset,
-                                root_dir=args.root_dir,
-                                max_num_nbr=args.max_num_nbr,
-                                radius=args.radius,
-                                dmin=args.dmin,
-                                step=args.step,
-                                var=args.var,
-                                nx=args.nx,
-                                lmax=args.lmax,
-                                batch_size=args.batch_size,
-                                drop_last=args.drop_last,
-                                save_to_disk=args.save_to_disk)
-    collate_fn = collate_pool
-    class_weights, train_loader, val_loader, test_loader = get_train_val_test_loader(
-        dataset=struct_dataset,
-        classification=True if args.task =='classification' else False,
-        collate_fn=collate_fn,
+    # Get train/val/test splits using IdTargetData
+    class_weights, id_train_loader, id_val_loader, id_test_loader = get_train_val_test_loader(
+        dataset=id_target_dataset,
+        classification=True if args.task == 'classification' else False,
+        collate_fn=collate_pool,
         batch_size=args.batch_size,
         train_ratio=args.train_ratio,
         num_workers=args.workers,
@@ -176,6 +173,50 @@ def main():
         drop_last=args.drop_last,
         multiprocessing_context=get_context('spawn') if args.workers > 0 else None,
         return_test=True)
+
+    # If save_to_disk is True, pre-process and save all data
+    if args.save_to_disk:
+        struct_dataset = StructData(
+            id_prop_data=id_target_dataset.id_prop_data,
+            root_dir=args.root_dir,
+            max_num_nbr=args.max_num_nbr,
+            radius=args.radius,
+            dmin=args.dmin,
+            step=args.step,
+            var=args.var,
+            nx=args.nx,
+            lmax=args.lmax,
+            batch_size=args.batch_size,
+            drop_last=args.drop_last,
+            save_to_disk=True
+        )
+        # Clear the memory after saving
+        struct_dataset.clear_cache()
+        struct_dataset = None
+
+    # Create a temporary StructData instance to get feature dimensions
+    temp_struct_dataset = StructData(
+        id_prop_data=[id_target_dataset.id_prop_data[0]],
+        root_dir=args.root_dir,
+        max_num_nbr=args.max_num_nbr,
+        radius=args.radius,
+        dmin=args.dmin,
+        step=args.step,
+        var=args.var,
+        nx=args.nx,
+        lmax=args.lmax,
+        batch_size=1,
+        drop_last=False,
+        save_to_disk=False
+    )
+    
+    # Get feature dimensions from the first structure
+    structures, _, _ = temp_struct_dataset[0]
+    orig_atom_fea_len = structures[0].shape[-1]
+    nbr_fea_len = structures[1].shape[-1]
+    
+    # Clear temporary dataset
+    temp_struct_dataset = None
 
     # obtain target value normalizer
     if args.task == 'classification':
@@ -196,10 +237,6 @@ def main():
         normalizer = Normalizer(sample_target)
 
     # build model
-    structures, _, _ = struct_dataset[0]
-    orig_atom_fea_len = structures[0].shape[-1]
-    nbr_fea_len = structures[1].shape[-1]
-    
     model = EosNet(
         orig_atom_fea_len=orig_atom_fea_len,
         nbr_fea_len=nbr_fea_len,
@@ -208,7 +245,12 @@ def main():
         n_conv=args.n_conv,
         n_h=args.n_h,
         update_bond=args.update_bond,
-        classification=True if args.task == 'classification' else False
+        classification=True if args.task == 'classification' else False,
+        attention=args.attention,
+        resnet=args.resnet,
+        hidden_dim=args.hidden_dim,
+        num_heads=args.num_heads,
+        dropout=args.dropout
     )
 
     if args.cuda:
@@ -263,11 +305,11 @@ def main():
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[args.warmup_epochs])
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, normalizer)
-
+        train(id_train_loader, model, criterion, optimizer, epoch, normalizer)
+        
         # evaluate on validation set
-        val_loss, mae_error = validate(val_loader, model, criterion, normalizer)
-
+        val_loss, mae_error = validate(id_val_loader, model, criterion, normalizer, test=False)
+        
         if mae_error != mae_error:
             print('Exit due to NaN')
             sys.exit(1)
@@ -295,10 +337,10 @@ def main():
     print('---------Evaluate Model on Test Set---------------')
     best_checkpoint = torch.load('model_best.pth.tar')
     model.load_state_dict(best_checkpoint['state_dict'])
-    validate(test_loader, model, criterion, normalizer, test=True)
+    validate(id_test_loader, model, criterion, normalizer, test=True)
 
 
-def train(train_loader, model, criterion, optimizer, epoch, normalizer):
+def train(id_loader, model, criterion, optimizer, epoch, normalizer):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -311,19 +353,46 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
         fscores = AverageMeter()
         auc_scores = AverageMeter()
 
+    # Create StructData instance with training data
+    train_data = [(sid, target) for sid, target in id_loader.dataset.id_prop_data]
+    struct_dataset = StructData(
+        id_prop_data=train_data,
+        root_dir=args.root_dir,
+        max_num_nbr=args.max_num_nbr,
+        radius=args.radius,
+        dmin=args.dmin,
+        step=args.step,
+        var=args.var,
+        nx=args.nx,
+        lmax=args.lmax,
+        batch_size=args.batch_size,
+        drop_last=args.drop_last,
+        save_to_disk=False
+    )
+
     # switch to train mode
     model.train()
 
     end = time.time()
-    for i, (input, target, _) in enumerate(train_loader):
+
+    for i, (targets, struct_ids) in enumerate(id_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
+        # Get batch data
+        batch_data = []
+        for sid, target in zip(struct_ids, targets):
+            idx = next(i for i, (s, _) in enumerate(struct_dataset.id_prop_data) if s == sid)
+            batch_data.append(struct_dataset[idx])
+        
+        # Pass complete tuples to collate_pool
+        input, _, _ = collate_pool(batch_data)
+        
         if args.cuda:
             input_var = (Variable(input[0].to("cuda", non_blocking=True)),
-                         Variable(input[1].to("cuda", non_blocking=True)),
-                         input[2].to("cuda", non_blocking=True),
-                         [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
+                        Variable(input[1].to("cuda", non_blocking=True)),
+                        input[2].to("cuda", non_blocking=True),
+                        [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
         elif args.mps:
             input_var = (Variable(input[0].to("mps", non_blocking=False)),
                          Variable(input[1].to("mps", non_blocking=False)),
@@ -334,8 +403,12 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                          Variable(input[1]),
                          input[2],
                          input[3])
+
+        # Convert targets to tensor
+        target = torch.tensor([float(t) for t in targets], dtype=torch.float)
         target = target.view(-1, 1)
         target = target.to(device)
+
         # normalize target
         if args.task == 'regression':
             target_normed = normalizer.norm(target)
@@ -387,7 +460,7 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                       'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                       'MAE {mae_errors.val:.3f} ({mae_errors.avg:.3f})'.format(
-                    epoch, i, len(train_loader), batch_time=batch_time,
+                    epoch, i, len(id_loader), batch_time=batch_time,
                     data_time=data_time, loss=losses, mae_errors=mae_errors)
                 )
             else:
@@ -400,14 +473,17 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                       'Recall {recall.val:.3f} ({recall.avg:.3f})\t'
                       'F1 {f1.val:.3f} ({f1.avg:.3f})\t'
                       'AUC {auc.val:.3f} ({auc.avg:.3f})'.format(
-                    epoch, i, len(train_loader), batch_time=batch_time,
+                    epoch, i, len(id_loader), batch_time=batch_time,
                     data_time=data_time, loss=losses, accu=accuracies,
                     prec=precisions, recall=recalls, f1=fscores,
                     auc=auc_scores)
                 )
+    
+    # Clean up
+    struct_dataset.clear_cache()
+    struct_dataset = None
 
-
-def validate(val_loader, model, criterion, normalizer, test=False):
+def validate(id_loader, model, criterion, normalizer, test=False):
     batch_time = AverageMeter()
     losses = AverageMeter()
     if args.task == 'regression':
@@ -423,11 +499,38 @@ def validate(val_loader, model, criterion, normalizer, test=False):
         test_preds = []
         test_struct_ids = []
 
+    # Create StructData instance with validation/test data
+    val_data = [(sid, target) for sid, target in id_loader.dataset.id_prop_data]
+    struct_dataset = StructData(
+        id_prop_data=val_data,
+        root_dir=args.root_dir,
+        max_num_nbr=args.max_num_nbr,
+        radius=args.radius,
+        dmin=args.dmin,
+        step=args.step,
+        var=args.var,
+        nx=args.nx,
+        lmax=args.lmax,
+        batch_size=args.batch_size,
+        drop_last=args.drop_last,
+        save_to_disk=False
+    )
+
     # switch to evaluate mode
     model.eval()
 
     end = time.time()
-    for i, (input, target, batch_struct_ids) in enumerate(val_loader):
+
+    for i, (targets, struct_ids) in enumerate(id_loader):
+        # Get batch data
+        batch_data = []
+        for sid, target in zip(struct_ids, targets):
+            idx = next(i for i, (s, _) in enumerate(struct_dataset.id_prop_data) if s == sid)
+            batch_data.append(struct_dataset[idx])
+        
+        # Pass complete tuples to collate_pool
+        input, _, _ = collate_pool(batch_data)
+        
         if args.cuda:
             with torch.no_grad():
                 input_var = (Variable(input[0].to("cuda", non_blocking=True)),
@@ -448,8 +551,12 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                              Variable(input[1]),
                              input[2],
                              input[3])
+
+        # Convert targets to tensor
+        target = torch.tensor([float(t) for t in targets], dtype=torch.float)
         target = target.view(-1, 1)
         target = target.to(device)
+
         if args.task == 'regression':
             target_normed = normalizer.norm(target)
         else:
@@ -478,7 +585,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                 test_target = target
                 test_preds += test_pred.view(-1).tolist()
                 test_targets += test_target.view(-1).tolist()
-                test_struct_ids += batch_struct_ids
+                test_struct_ids += struct_ids
         else:
             accuracy, precision, recall, fscore, auc_score = \
                 class_eval(output.data.cpu(), target)
@@ -494,7 +601,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                 assert test_pred.shape[1] == 2
                 test_preds += test_pred[:, 1].tolist()
                 test_targets += test_target.view(-1).tolist()
-                test_struct_ids += batch_struct_ids
+                test_struct_ids += struct_ids
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -506,7 +613,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                       'MAE {mae_errors.val:.3f} ({mae_errors.avg:.3f})'.format(
-                    i, len(val_loader), batch_time=batch_time, loss=losses,
+                    i, len(id_loader), batch_time=batch_time, loss=losses,
                     mae_errors=mae_errors))
             else:
                 print('Test: [{0}/{1}]\t'
@@ -517,9 +624,13 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                       'Recall {recall.val:.3f} ({recall.avg:.3f})\t'
                       'F1 {f1.val:.3f} ({f1.avg:.3f})\t'
                       'AUC {auc.val:.3f} ({auc.avg:.3f})'.format(
-                    i, len(val_loader), batch_time=batch_time, loss=losses,
+                    i, len(id_loader), batch_time=batch_time, loss=losses,
                     accu=accuracies, prec=precisions, recall=recalls,
                     f1=fscores, auc=auc_scores))
+    
+    # Clean up
+    struct_dataset.clear_cache()
+    struct_dataset = None
 
     if test:
         star_label = '**'
@@ -651,7 +762,8 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 if __name__ == '__main__':
     os.system('ulimit -n 4096')
-    set_sharing_strategy('file_system')
+    # Only set file_system sharing if having memory/stability issues
+    # set_sharing_strategy('file_system')
     warnings.filterwarnings("ignore", category=UserWarning, message=".*epoch parameter in `scheduler.step\(\)`.*")
     
     # For future reproducibility

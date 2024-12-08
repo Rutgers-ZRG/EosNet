@@ -19,6 +19,11 @@
 - Use `get_neighbor_info` to correctly handle padding of neighbors with given cutoff
 - Add `--update-bond` option to use `BondConvLayer` to update `nbr_fea`
 - `CrystalGraphConvNet` has been completely restructured and renamed to `EosNet`
+- Add `--attention` and related options to use `AttentionReadout` for crystal feature pooling
+- Complete refrom the `StructData` with batch loading and processing, and add `dataset.clear_cache()` to release memory
+- Move instancing of `StructData` to `tain()` and `validate()` seprately instead of in `main()`
+- Use `IdTargetData` for `get_train_val_test_loader()`, and get `struct_data` from `StructData` by batches
+- Saving the `processed_data` to multiple `npz` files under `saved_npz_files` directory instead of one big file
 - Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/Rutgers-ZRG/libfp) to improve speed. \
   (Optional) Modify the `setup.py` in `fplib` if you use `conda` to install LAPACK:
   ```python

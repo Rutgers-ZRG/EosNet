@@ -104,30 +104,31 @@ def main():
         print(f"Removing existing cached file: {processed_file}")
         os.remove(processed_file)
 
-    # load data
-    dataset = StructData(id_prop_data=id_target_data,
-                         root_dir=args.structpath,
-                         max_num_nbr=model_args.max_num_nbr,
-                         radius=model_args.radius,
-                         dmin=model_args.dmin,
-                         step=model_args.step,
-                         var=model_args.var,
-                         nx=model_args.nx,
-                         lmax=model_args.lmax,
-                         save_to_disk=args.save_to_disk)
-
-    def ordered_collate(data_list):
-        _, _, struct_ids = zip(*data_list)
-        batch_data = collate_pool(data_list)
-        
-        return batch_data[0], batch_data[1], list(struct_ids)
-
-    test_loader = DataLoader(dataset,
+    # Create test loader from id_target_data
+    test_loader = DataLoader(id_target_data,
                              batch_size=args.batch_size,
+                             num_workers=max(0, args.workers),
                              shuffle=False,
-                             num_workers=args.workers,
-                             collate_fn=ordered_collate,
+                             drop_last=False,
+                             persistent_workers=args.workers > 0,
                              pin_memory=args.cuda)
+
+    # Create StructData instance with prediction data
+    pred_data = [(struct_id, target) for struct_id, target in id_target_data]
+    dataset = StructData(
+        id_prop_data=pred_data,
+        root_dir=args.structpath,
+        max_num_nbr=model_args.max_num_nbr,
+        radius=model_args.radius,
+        dmin=model_args.dmin,
+        step=model_args.step,
+        var=model_args.var,
+        nx=model_args.nx,
+        lmax=model_args.lmax,
+        batch_size=args.batch_size,
+        drop_last=False,
+        save_to_disk=False
+    )
 
     # build model
     structures, _, _ = dataset[0]
@@ -142,7 +143,12 @@ def main():
         n_conv=model_args.n_conv,
         n_h=model_args.n_h,
         update_bond=model_args.update_bond,
-        classification=True if model_args.task == 'classification' else False
+        classification=True if model_args.task == 'classification' else False,
+        attention=model_args.attention,
+        resnet=model_args.resnet,
+        hidden_dim=model_args.hidden_dim,
+        num_heads=model_args.num_heads,
+        dropout=model_args.dropout
     )
     
     # Initialize normalizer
@@ -189,7 +195,16 @@ def validate(val_loader, model, normalizer, test=False):
     # switch to evaluate mode
     model.eval()
 
-    for _, (input, _, batch_struct_ids) in enumerate(val_loader):
+    for _, (targets, struct_ids) in enumerate(val_loader):
+        # Get batch data
+        batch_data = []
+        for sid, target in zip(struct_ids, targets):
+            idx = next(i for i, (s, _) in enumerate(dataset.id_prop_data) if s == sid)
+            batch_data.append(dataset[idx])
+        
+        # Pass complete tuples to collate_pool
+        input, _, _ = collate_pool(batch_data)
+
         with torch.no_grad():
             if args.cuda:
                 input_var = (Variable(input[0].to("cuda", non_blocking=True)),
@@ -217,7 +232,11 @@ def validate(val_loader, model, normalizer, test=False):
         else:
             pred = torch.exp(output.data.cpu())
             test_preds += pred[:, 1].tolist()
-        test_struct_ids += batch_struct_ids
+        test_struct_ids += struct_ids
+
+    # Clean up
+    dataset.clear_cache()
+    dataset = None
 
     # Output predictions
     if test:
