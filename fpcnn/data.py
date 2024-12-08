@@ -86,8 +86,7 @@ def get_train_val_test_loader(dataset, classification=False,
         valid_size = int(val_ratio * total_size)
     if classification:
         train_indices = indices[:train_size]
-        train_targets = [np.array(dataset[i][1].numpy(),
-                                  dtype=np.int32).item() for i in train_indices]
+        train_targets = [np.array(dataset[i][1], dtype=np.int32).item() for i in train_indices]
         class_weights = compute_class_weight(
             class_weight = 'balanced',
             classes = np.unique(train_targets),
@@ -192,7 +191,7 @@ def collate_pool(dataset_list):
     if isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 2:
         batch_target, batch_struct_ids = [], []
         for struct_id, target in dataset_list:
-            batch_target.append(torch.tensor([target], dtype=torch.float))
+            batch_target.append(torch.tensor([float(target)], dtype=torch.float))
             batch_struct_ids.append(struct_id)
         return torch.cat(batch_target, dim=0), batch_struct_ids
     
@@ -212,7 +211,9 @@ def collate_pool(dataset_list):
             batch_nbr_fea_idx.append(nbr_fea_idx + base_idx)
             
             crystal_atom_idx.append(torch.LongTensor(np.arange(n_i) + base_idx))
-            batch_target.append(torch.tensor([target], dtype=torch.float))
+            if not isinstance(target, torch.Tensor):
+                target = torch.tensor([float(target)], dtype=torch.float)
+            batch_target.append(target)
             batch_struct_ids.append(struct_id)
             
             base_idx += n_i
@@ -484,15 +485,52 @@ class StructData(Dataset):
         
         self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step, var=var)
         
-        self.processed_file = os.path.join(self.root_dir, 'processed_data.npz')
+        # Create processed directory if it doesn't exist
+        self.process_dir = os.path.join(self.root_dir, 'saved_npz_files')
+        os.makedirs(self.process_dir, exist_ok=True)
         
-        if save_to_disk:
+        self.processed_data = None
+        
+        if self.drop_last:
+            self.num_batches = self.total_size // self.batch_size
+        else:
+            self.num_batches = (self.total_size + self.batch_size - 1) // self.batch_size
+        
+        # Check if all batch files exist
+        all_batches_exist = all(
+            os.path.exists(os.path.join(self.process_dir, f'processed_data-{i+1}.npz'))
+            for i in range(self.num_batches)
+        )
+        
+        if all_batches_exist and not save_to_disk:
+            self.load_dataset()
+        elif save_to_disk:
             self.save_dataset()
-        
-        if os.path.exists(self.processed_file):
             self.load_dataset()
         else:
-            self.processed_data = None
+            self.processed_data = []
+            for i in range(0, self.total_size, self.batch_size):
+                end_index = min(i + self.batch_size, self.total_size)
+                
+                if self.drop_last and end_index - i < self.batch_size:
+                    break
+                    
+                # Process batch
+                batch = []
+                for j in range(i, end_index):
+                    struct_id, target = self.id_prop_data[j]
+                    crystal = self.read_structure(struct_id)
+                    atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+                    
+                    # Convert to tensors immediately
+                    processed_features = (
+                        torch.FloatTensor(atom_fea),
+                        torch.FloatTensor(nbr_fea),
+                        torch.LongTensor(nbr_fea_idx)
+                    )
+                    batch.append((processed_features, target, struct_id))
+                
+                self.processed_data.extend(batch)
 
     def __len__(self):
         return len(self.id_prop_data)
@@ -582,7 +620,7 @@ class StructData(Dataset):
         atoms = crystal.to_ase_atoms()
         
         # Get neighbor information
-        nbr_indices, nbr_distances, displacement_vectors = get_neighbor_info(
+        nbr_indices, nbr_distances, _ = get_neighbor_info(
             atoms, self.radius, self.max_num_nbr, struct_id=struct_id
         )
         
@@ -611,66 +649,127 @@ class StructData(Dataset):
         nbr_fea = self.gdf.expand(nbr_distances)
         
         return atom_fea, nbr_fea, nbr_indices
-    
+
     def __getitem__(self, idx):
-        if self.processed_data is not None:
-            item = self.processed_data[idx]
-        else:
-            item = self.process_item(idx)
+        """Get a single data point"""
+        struct_id, target = self.id_prop_data[idx]
         
-        atom_fea = torch.Tensor(item['atom_fea'])
-        nbr_fea = torch.Tensor(item['nbr_fea'])
-        nbr_fea_idx = torch.LongTensor(item['nbr_fea_idx'])
-        target = torch.Tensor([item['target']])
+        # If data is already processed
+        if hasattr(self, 'processed_data') and self.processed_data is not None:
+            return self.processed_data[idx]
         
-        return (atom_fea, nbr_fea, nbr_fea_idx), target, item['struct_id']
+        # Otherwise process on-the-fly
+        crystal = self.read_structure(struct_id)
+        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+        
+        # Convert to tensors
+        processed_features = (
+            torch.FloatTensor(atom_fea),
+            torch.FloatTensor(nbr_fea),
+            torch.LongTensor(nbr_fea_idx)
+        )
+        return (processed_features, target, struct_id)
+
+    def read_structure(self, struct_id):
+        """Read structure from file"""
+        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
+        crystal = Structure.from_file(cell_file)
+        return crystal
 
     def process_item(self, idx):
         struct_id, target = self.id_prop_data[idx]
-        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
-        crystal = Structure.from_file(cell_file)
+        crystal = self.read_structure(struct_id)
         atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
-        return {
-            'atom_fea': atom_fea,
-            'nbr_fea': nbr_fea,
-            'nbr_fea_idx': nbr_fea_idx,
-            'target': float(target),
-            'struct_id': struct_id
-        }
+
+        if self.save_to_disk:
+            return (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id
+        else:
+            return (
+                (torch.FloatTensor(atom_fea),
+                 torch.FloatTensor(nbr_fea),
+                 torch.LongTensor(nbr_fea_idx)),
+                 target, struct_id)
 
     def load_dataset(self):
-        print(f"Loading dataset from {self.processed_file}")
-        with np.load(self.processed_file, allow_pickle=True) as loader:
-            self.processed_data = loader['data']
-        print(f"Loaded {len(self.processed_data)} data points")
+        """
+        Loads only the required batch data
+        """
+        self.processed_data = []
+        
+        # Get the struct_ids we need
+        batch_struct_ids = set(sid for sid, _ in self.id_prop_data)
+        
+        # If loading full dataset
+        if len(batch_struct_ids) == self.total_size:
+            for batch_idx in range(1, self.num_batches + 1):
+                batch_file = os.path.join(self.process_dir, f'processed_data-{batch_idx}.npz')
+                with np.load(batch_file, allow_pickle=True) as loader:
+                    batch_data = loader['data']
+                    for item in batch_data:
+                        features_tuple, target, struct_id = item
+                        processed_features = (
+                            torch.FloatTensor(features_tuple[0]),
+                            torch.FloatTensor(features_tuple[1]),
+                            torch.LongTensor(features_tuple[2])
+                        )
+                        self.processed_data.append((processed_features, target, struct_id))
+        else:
+            # Create mapping from struct_id to batch number
+            struct_to_batch = {}
+            batch_idx = 1
+            for i in range(0, self.total_size, self.batch_size):
+                end_index = min(i + self.batch_size, self.total_size)
+                for j in range(i, end_index):
+                    struct_id, _ = self.id_prop_data[j]
+                    struct_to_batch[struct_id] = batch_idx
+                batch_idx += 1
+            
+            # Load only needed batches
+            needed_batches = set(struct_to_batch[sid] for sid in batch_struct_ids)
+            for batch_idx in needed_batches:
+                batch_file = os.path.join(self.process_dir, f'processed_data-{batch_idx}.npz')
+                with np.load(batch_file, allow_pickle=True) as loader:
+                    batch_data = loader['data']
+                    for item in batch_data:
+                        features_tuple, target, struct_id = item
+                        if struct_id in batch_struct_ids:
+                            processed_features = (
+                                torch.FloatTensor(features_tuple[0]),
+                                torch.FloatTensor(features_tuple[1]),
+                                torch.LongTensor(features_tuple[2])
+                            )
+                            self.processed_data.append((processed_features, target, struct_id))
 
     def save_dataset(self):
-        print("Processing and saving dataset...")
-        data = []
-        for i in range(0, self.total_size, self.batch_size):
-            end_index = min(i + self.batch_size, self.total_size)
-            
-            if self.drop_last and end_index - i < self.batch_size:
-                break
-            
-            batch = [self.process_item(j) for j in range(i, end_index)]
-            data.extend(batch)
+        """
+        Saves processed data in batch-sized shards
+        """
+        print("Processing and saving dataset in batches...")
         
-        np.savez_compressed(self.processed_file, data=data)
-        print("Dataset saved to disk.")
+        for batch_idx in range(1, self.num_batches + 1):
+            start_idx = (batch_idx - 1) * self.batch_size
+            end_idx = min(start_idx + self.batch_size, self.total_size)
+            
+            # Process batch
+            batch_data = []
+            for j in range(start_idx, end_idx):
+                struct_id, target = self.id_prop_data[j]
+                crystal = self.read_structure(struct_id)
+                atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+                batch_data.append(((atom_fea, nbr_fea, nbr_fea_idx), target, struct_id))
+            
+            # Save batch
+            save_path = os.path.join(self.process_dir, f'processed_data-{batch_idx}.npz')
+            np.savez_compressed(save_path, data=np.array(batch_data, dtype=object), allow_pickle=True)
+        
+        print(f"Saved {len(self.id_prop_data)} data points in {self.num_batches} batches")
 
     def __iter__(self):
+        """Reset iterator index"""
         self.current_index = 0
         return self
 
-    def __next__(self):
-        if self.current_index >= self.total_size:
-            raise StopIteration
-        end_index = min(self.current_index + self.batch_size, self.total_size)
-        
-        if self.drop_last and end_index - self.current_index < self.batch_size:
-            raise StopIteration
-        
-        batch = [self.process_item(i) for i in range(self.current_index, end_index)]
-        self.current_index = end_index
-        return batch
+    def clear_cache(self):
+        """Clear any cached data"""
+        if hasattr(self, 'processed_data'):
+            self.processed_data = None

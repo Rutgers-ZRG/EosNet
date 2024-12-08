@@ -63,6 +63,10 @@ class AtomConvLayer(nn.Module):
         """
         # Get neighbor features
         N, M = nbr_fea_idx.shape
+        assert bond_weights_i.shape == (N, M), f"bond_weights_i should be shape ({N}, {M}), got {bond_weights_i.shape}"
+        assert bond_weights_j.shape == (N, M), f"bond_weights_j should be shape ({N}, {M}), got {bond_weights_j.shape}"
+        
+        # Get neighbor features
         atom_nbr_fea = atom_in_fea[nbr_fea_idx.view(-1)].view(N, M, -1)
         
         # Concatenate atom features and bond features
@@ -72,7 +76,7 @@ class AtomConvLayer(nn.Module):
              nbr_fea], dim=2)
         
         # Apply pair-wise bond weights
-        total_gated_fea = total_nbr_fea * bond_weights_i.unsqueeze(-1)
+        total_gated_fea = total_nbr_fea * bond_weights_i.unsqueeze(-1) * bond_weights_j.unsqueeze(-1)
         
         # Sum over neighbors
         total_gated_fea = total_gated_fea.sum(dim=1)
@@ -161,8 +165,10 @@ class BondConvLayer(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, atom_fea_len, nbr_fea_len, update_bond=False):
+    def __init__(self, atom_fea_len, nbr_fea_len, update_bond=False, resnet=True):
         super(ConvBlock, self).__init__()
+        
+        self.resnet = resnet
         
         # Atom convolution
         self.atom_conv = AtomConvLayer(atom_fea_len, nbr_fea_len)
@@ -213,21 +219,27 @@ class ConvBlock(nn.Module):
         atom_identity = atom_fea
         atom_fea = self.atom_conv(atom_fea, nbr_fea, nbr_fea_idx, 
                                  bond_weights_ag_i, bond_weights_ag_j)
-        atom_fea = self.atom_norm(atom_fea + atom_identity)
+        if self.resnet:
+            atom_fea = self.atom_norm(atom_fea + atom_identity)
+        else:
+            atom_fea = self.atom_norm(atom_fea)
         
         # Local skip connection for bond features
         if self.update_bond:
             bond_identity = nbr_fea
             nbr_fea = self.bond_conv(atom_fea, nbr_fea, nbr_fea_idx,
                                     bond_weights_bg_i, bond_weights_bg_j)
-            nbr_fea = self.bond_norm(nbr_fea + bond_identity)
+            if self.resnet:
+                nbr_fea = self.bond_norm(nbr_fea + bond_identity)
+            else:
+                nbr_fea = self.bond_norm(nbr_fea)
         
         return atom_fea, nbr_fea
 
 
 class GraphConvNet(nn.Module):
     """Graph convolution network for updating atom and bond features"""
-    def __init__(self, atom_fea_len, nbr_fea_len, n_conv, update_bond=False):
+    def __init__(self, atom_fea_len, nbr_fea_len, n_conv, update_bond=False, resnet=True):
         """
         Initialize GraphConvNet.
         
@@ -244,11 +256,13 @@ class GraphConvNet(nn.Module):
         """
         super(GraphConvNet, self).__init__()
         self.update_bond = update_bond
+        self.resnet = resnet
         self.conv_blocks = nn.ModuleList([
             ConvBlock(
                 atom_fea_len=atom_fea_len,
                 nbr_fea_len=nbr_fea_len,
-                update_bond=update_bond
+                update_bond=update_bond,
+                resnet=resnet
             ) for _ in range(n_conv)
         ])
         
@@ -291,10 +305,77 @@ class GraphConvNet(nn.Module):
         return atom_fea, nbr_fea
 
 
+class AttentionReadout(nn.Module):
+    """Multi-head attention readout layer"""
+    def __init__(self, atom_fea_len, hidden_dim=32, num_heads=None, dropout=0.1):
+        super().__init__()
+        self.atom_fea_len = atom_fea_len
+        
+        if num_heads is None:
+            self.num_heads = max(1, atom_fea_len // hidden_dim)
+        else:
+            self.num_heads = num_heads
+            
+        self.key = nn.Sequential(
+            nn.Linear(atom_fea_len, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(hidden_dim, self.num_heads)
+        )
+        
+        self.project = nn.Sequential(
+            nn.Linear(self.num_heads * atom_fea_len, atom_fea_len),
+            nn.SiLU(),
+            nn.Dropout(p=dropout)
+        )
+        
+        self.softmax = nn.Softmax(dim=1)
+        
+    def forward(self, atom_fea, crystal_atom_idx):
+        """
+        Aggregate atom features to crystal features using attention
+        
+        Parameters
+        ----------
+        atom_fea: torch.Tensor shape (N, atom_fea_len)
+            Atom features after convolution
+        crystal_atom_idx: list of torch.LongTensor
+            Indices of atoms in each crystal
+            
+        Returns
+        -------
+        torch.Tensor shape (batch_size, atom_fea_len)
+            Crystal features
+        """
+        weights = self.key(atom_fea)
+        
+        crystal_feas = []
+        for idx_map in crystal_atom_idx:
+            # Get features for this crystal
+            crystal_atom_fea = atom_fea[idx_map]
+            crystal_weights = self.softmax(weights[idx_map])
+            
+            # Weighted sum for each head separately
+            weighted_sum = torch.zeros(self.num_heads, self.atom_fea_len, 
+                                    device=atom_fea.device)
+            for h in range(self.num_heads):
+                head_weights = crystal_weights[:, h].unsqueeze(1)
+                weighted_sum[h] = (crystal_atom_fea * head_weights).sum(0)
+            
+            # Concatenate results from all heads and project back
+            crystal_fea = weighted_sum.view(-1)
+            crystal_fea = self.project(crystal_fea)
+            crystal_feas.append(crystal_fea)
+            
+        return torch.stack(crystal_feas, dim=0)
+
+
 class EosNet(nn.Module):
     """Neural network for predicting equation of state parameters"""
     def __init__(self, orig_atom_fea_len, nbr_fea_len, atom_fea_len=64,
-                 h_fea_len=128, n_conv=3, n_h=1, update_bond=False, classification=False):
+                 h_fea_len=128, n_conv=3, n_h=1, update_bond=False, 
+                 classification=False, attention=False, resnet=True,
+                 hidden_dim=32, num_heads=None, dropout=0.1):
         """
         Initialize EosNet.
         
@@ -316,11 +397,18 @@ class EosNet(nn.Module):
             Whether to update bond features
         classification: bool
             Whether to do classification
+        attention: bool
+            Whether to use attention readout
+        resnet: bool
+            Whether to use resnet style normalization
+        dropout: float
+            Dropout rate for classification task
         """
         super(EosNet, self).__init__()
         
         self.classification = classification
         self.update_bond = update_bond
+        self.attention = attention
         
         # Initial embedding
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
@@ -345,8 +433,18 @@ class EosNet(nn.Module):
             atom_fea_len=atom_fea_len,
             nbr_fea_len=nbr_fea_len,
             n_conv=n_conv,
-            update_bond=update_bond
+            update_bond=update_bond,
+            resnet=resnet
         )
+        
+        # Attention readout
+        if attention:
+            self.attention_readout = AttentionReadout(
+                atom_fea_len,
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
+                dropout=dropout
+            )
         
         # Transition from conv to fc
         self.conv_to_fc = nn.Linear(atom_fea_len, h_fea_len)
@@ -357,20 +455,25 @@ class EosNet(nn.Module):
             self.fcs = nn.ModuleList()
             self.fc_projections = nn.ModuleList()
             self.softpluses = nn.ModuleList()
+            self.fc_dropouts = nn.ModuleList()
             
             for _ in range(n_h-1):
                 self.fcs.append(nn.Linear(h_fea_len, h_fea_len))
                 self.fc_projections.append(nn.Linear(h_fea_len, h_fea_len))
                 self.softpluses.append(nn.Softplus())
+                self.fc_dropouts.append(nn.Dropout(p=dropout))
         
         # Output layer
         if classification:
             self.fc_out = nn.Linear(h_fea_len, 2)
             self.logsoftmax = nn.LogSoftmax(dim=1)
-            self.dropout = nn.Dropout()
+            self.dropout = nn.Dropout(p=dropout)
         else:
             self.fc_out = nn.Linear(h_fea_len, 1)
             
+        # Transition dropout
+        self.conv_to_fc_dropout = nn.Dropout(p=dropout)
+        
     def pooling(self, atom_fea, crystal_atom_idx):
         """
         Pooling the atom features to crystal features
@@ -423,13 +526,13 @@ class EosNet(nn.Module):
         # Weights for atom graph
         bond_weights_ag = self.bond_weights_ag(nbr_fea_flat).view(N, M)
         bond_weights_ag_i = torch.sigmoid(bond_weights_ag)
-        bond_weights_ag_j = bond_weights_ag_i[nbr_fea_idx]
+        bond_weights_ag_j = torch.gather(bond_weights_ag_i, 0, nbr_fea_idx)
         
         # Weights for bond graph (if updating bonds)
         if self.update_bond:
             bond_weights_bg = self.bond_weights_bg(nbr_fea_flat).view(N, M)
             bond_weights_bg_i = torch.sigmoid(bond_weights_bg)
-            bond_weights_bg_j = bond_weights_bg_i[nbr_fea_idx]
+            bond_weights_bg_j = torch.gather(bond_weights_bg_i, 0, nbr_fea_idx)
         else:
             bond_weights_bg_i = bond_weights_bg_j = None
         
@@ -443,8 +546,14 @@ class EosNet(nn.Module):
             bond_weights_bg_i, bond_weights_bg_j
         )
         
-        # Pooling
-        crys_fea = self.pooling(atom_fea, crystal_atom_idx)
+        # Choose readout method
+        if self.attention:
+            crys_fea = self.attention_readout(atom_fea, crystal_atom_idx)
+        else:
+            crys_fea = self.pooling(atom_fea, crystal_atom_idx)
+        
+        # Apply dropout after pooling/attention
+        crys_fea = self.conv_to_fc_dropout(crys_fea)
         
         # Transition to fc layers
         crys_fea = self.conv_to_fc(self.conv_to_fc_softplus(crys_fea))
@@ -456,9 +565,11 @@ class EosNet(nn.Module):
         
         # FC layers with residual connections
         if hasattr(self, 'fcs'):
-            for fc, softplus, projection in zip(self.fcs, self.softpluses, self.fc_projections):
+            for fc, softplus, projection, dropout in zip(
+                self.fcs, self.softpluses, self.fc_projections, self.fc_dropouts):
                 identity = crys_fea
                 crys_fea = softplus(fc(crys_fea))
+                crys_fea = dropout(crys_fea)
                 identity = projection(identity)
                 crys_fea = crys_fea + identity
         
