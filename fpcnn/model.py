@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 
-class ConvLayer(nn.Module):
+class AtomConvLayer(nn.Module):
     """
     Convolutional operation on graphs
     """
@@ -23,7 +23,7 @@ class ConvLayer(nn.Module):
         nbr_fea_len: int
           Number of bond features.
         """
-        super(ConvLayer, self).__init__()
+        super(AtomConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
         self.nbr_fea_len = nbr_fea_len
         self.fc_full = nn.Linear(2*self.atom_fea_len+self.nbr_fea_len,
@@ -107,7 +107,7 @@ class CrystalGraphConvNet(nn.Module):
         super(CrystalGraphConvNet, self).__init__()
         self.classification = classification
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
-        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len,
+        self.convs = nn.ModuleList([AtomConvLayer(atom_fea_len=atom_fea_len,
                                     nbr_fea_len=nbr_fea_len)
                                     for _ in range(n_conv)])
         self.conv_to_fc = nn.Linear(atom_fea_len, h_fea_len)
