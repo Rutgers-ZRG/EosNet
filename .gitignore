@@ -94,5 +94,15 @@ Local
 # DATA directory
 DATA
 
+# Backups
+*.bak
+*.bk
+*.backup
+bk_*
+bk
+bkup
+backup
+
+
 # .DS_Store
 .DS_Store
