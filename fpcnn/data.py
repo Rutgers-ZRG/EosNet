@@ -13,6 +13,7 @@ from functools import reduce, lru_cache
 import numpy as np
 import fplib
 from pymatgen.core.structure import Structure
+from pymatgen.io.ase import AseAtomsAdaptor
 from ase.io import read as ase_read
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -318,7 +319,7 @@ class IdTargetData(Dataset):
 
 def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None):
     """
-    Get neighbor information using ASE's NeighborList.
+    Get neighbor information using pymatgen's get_all_neighbors.
     
     Args:
         atoms: ASE Atoms object
@@ -331,48 +332,16 @@ def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None):
         nbr_distances: Array of distances [n_atoms, max_num_nbr]
         displacement_vectors: Array of displacement vectors [n_atoms, max_num_nbr, 3]
     """
-    from ase.neighborlist import NeighborList
-    # Create neighbor list
-    nl = NeighborList([radius/2] * len(atoms), self_interaction=True, bothways=True)
-    nl.update(atoms)
-    cell = atoms.get_cell(complete=True)
-    positions = atoms.get_positions()
-    n_atoms = len(atoms)
+    # Convert to pymatgen Structure
+    structure = AseAtomsAdaptor.get_structure(atoms)
     
-    # Initialize lists to store neighbor information
-    nbr_idx, nbr_dis, disp = [], [], []
+    # Get all neighbors using pymatgen
+    all_nbrs = structure.get_all_neighbors(radius, include_index=True)
+    all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
     
-    # First pass to get all neighbors
-    for i in range(n_atoms):
-        indices, offsets = nl.get_neighbors(i)
-        local_nbr_idx, local_nbr_dis, local_disp = [], [], []
-        
-        for j, offset in zip(indices, offsets):
-            # Skip the center atom
-            if j == i and np.allclose(offset, 0):
-                continue
-                
-            disp_vec = positions[j] - positions[i] + np.dot(cell, offset)
-            dist = np.linalg.norm(disp_vec)
-            
-            local_nbr_idx.append(j)
-            local_nbr_dis.append(dist)
-            local_disp.append(disp_vec)
-        
-        # Sort neighbors by distance
-        combined = list(zip(local_nbr_idx, local_nbr_dis, local_disp))
-        combined_sorted = sorted(combined, key=lambda x: x[1])
-        idx_sorted, dis_sorted, disp_sorted = zip(*combined_sorted) if combined_sorted else ([], [], [])
-        
-        nbr_idx.append(list(idx_sorted))
-        nbr_dis.append(list(dis_sorted))
-        disp.append(list(disp_sorted))
-    
-    # Second pass to trim and pad
-    trim_nbr_idx, trim_nbr_dis, trim_disp = [], [], []
-    
-    for i in range(n_atoms):
-        n_nbr = len(nbr_idx[i])
+    nbr_indices, nbr_distances, displacement_vectors = [], [], []
+    for nbr in all_nbrs:
+        n_nbr = len(nbr)
         
         if n_nbr < max_num_nbr:
             if struct_id:
@@ -381,30 +350,27 @@ def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None):
                               'radius.'.format(struct_id))
             
             # Get the last valid neighbor for padding
-            last_idx = nbr_idx[i][-1] if nbr_idx[i] else 0
-            last_dis = nbr_dis[i][-1] if nbr_dis[i] else radius + 1.0
-            last_disp = disp[i][-1] if disp[i] else np.zeros(3)
+            last_idx = nbr[-1][2] if nbr else 0
+            last_dis = nbr[-1][1] if nbr else radius + 1.0
+            last_disp = nbr[-1][0].coords - nbr[-1][0].frac_coords if nbr else np.zeros(3)
             
             # Pad with the last valid neighbor
-            local_nbr_idx = nbr_idx[i] + [last_idx] * (max_num_nbr - n_nbr)
-            local_nbr_dis = nbr_dis[i] + [last_dis] * (max_num_nbr - n_nbr)
-            local_disp = disp[i] + [last_disp] * (max_num_nbr - n_nbr)
+            local_indices = list(map(lambda x: x[2], nbr)) + [last_idx] * (max_num_nbr - n_nbr)
+            local_distances = list(map(lambda x: x[1], nbr)) + [last_dis] * (max_num_nbr - n_nbr)
+            local_disps = list(map(lambda x: x[0].coords - x[0].frac_coords, nbr)) + [last_disp] * (max_num_nbr - n_nbr)
         else:
             # Take only max_num_nbr neighbors
-            local_nbr_idx = nbr_idx[i][:max_num_nbr]
-            local_nbr_dis = nbr_dis[i][:max_num_nbr]
-            local_disp = disp[i][:max_num_nbr]
+            local_indices = list(map(lambda x: x[2], nbr[:max_num_nbr]))
+            local_distances = list(map(lambda x: x[1], nbr[:max_num_nbr]))
+            local_disps = list(map(lambda x: x[0].coords - x[0].frac_coords, nbr[:max_num_nbr]))
         
-        trim_nbr_idx.append(local_nbr_idx)
-        trim_nbr_dis.append(local_nbr_dis)
-        trim_disp.append(local_disp)
+        nbr_indices.append(local_indices)
+        nbr_distances.append(local_distances)
+        displacement_vectors.append(local_disps)
     
-    # Convert to numpy arrays
-    nbr_indices = np.array(trim_nbr_idx)
-    nbr_distances = np.array(trim_nbr_dis)
-    displacement_vectors = np.array(trim_disp)
-    
-    return nbr_indices, nbr_distances, displacement_vectors
+    return (np.array(nbr_indices), 
+            np.array(nbr_distances), 
+            np.array(displacement_vectors))
 
 class StructData(Dataset):
     """

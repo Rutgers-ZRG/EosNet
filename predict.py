@@ -107,9 +107,10 @@ def main():
     # Create test loader from id_target_data
     test_loader = DataLoader(id_target_data,
                              batch_size=args.batch_size,
-                             num_workers=max(0, args.workers),
+                             num_workers=args.workers,
                              shuffle=False,
                              drop_last=False,
+                             collate_fn=collate_pool,
                              persistent_workers=args.workers > 0,
                              pin_memory=args.cuda)
 
