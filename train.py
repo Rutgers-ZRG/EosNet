@@ -337,7 +337,13 @@ def main():
     print('---------Evaluate Model on Test Set---------------')
     best_checkpoint = torch.load('model_best.pth.tar')
     model.load_state_dict(best_checkpoint['state_dict'])
-    validate(id_test_loader, model, criterion, normalizer, test=True)
+    
+    # Save training set predictions
+    print('---------Saving Training & Testing Set Results---------------')
+    validate(id_train_loader, model, criterion, normalizer, test=True, filename='train_results.csv')
+    
+    # Save test set predictions
+    validate(id_test_loader, model, criterion, normalizer, test=True, filename='test_results.csv')
 
 
 def train(id_loader, model, criterion, optimizer, epoch, normalizer):
@@ -483,7 +489,7 @@ def train(id_loader, model, criterion, optimizer, epoch, normalizer):
     struct_dataset.clear_cache()
     struct_dataset = None
 
-def validate(id_loader, model, criterion, normalizer, test=False):
+def validate(id_loader, model, criterion, normalizer, test=False, filename=None):
     batch_time = AverageMeter()
     losses = AverageMeter()
     if args.task == 'regression':
@@ -632,10 +638,10 @@ def validate(id_loader, model, criterion, normalizer, test=False):
     struct_dataset.clear_cache()
     struct_dataset = None
 
-    if test:
+    if test and filename:
         star_label = '**'
         import csv
-        with open('test_results.csv', 'w') as f:
+        with open(filename, 'w') as f:
             writer = csv.writer(f)
             for struct_id, target, pred in zip(test_struct_ids, test_targets,
                                                test_preds):

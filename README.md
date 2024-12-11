@@ -24,6 +24,7 @@
 - Move instancing of `StructData` to `tain()` and `validate()` seprately instead of in `main()`
 - Use `IdTargetData` for `get_train_val_test_loader()`, and get `struct_data` from `StructData` by batches
 - Saving the `processed_data` to multiple `npz` files under `saved_npz_files` directory instead of one big file
+- Save both `train_results.csv` and `test_results.csv` at the end of training
 - Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/Rutgers-ZRG/libfp) to improve speed. \
   (Optional) Modify the `setup.py` in `fplib` if you use `conda` to install LAPACK:
   ```python
