@@ -180,8 +180,6 @@ def collate_pool(dataset_list):
         Bond features of each atom's M neighbors
       batch_nbr_fea_idx: torch.LongTensor shape (N, M)
         Indices of M neighbors of each atom
-      batch_angle_fea: torch.Tensor shape (N, num_angles, angle_fea_len)
-        Angle features of each atom's M neighbors
       crystal_atom_idx: list of torch.LongTensor of length N0
         Mapping from the crystal idx to atom idx
       batch_target: torch.Tensor shape (N, 1)
@@ -375,7 +373,7 @@ def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None):
 class StructData(Dataset):
     """
     The StructData dataset is a wrapper for a dataset where the crystal structures
-    are stored in the form of CIF files. The dataset should have the following
+    are stored in the form of POSCAR files. The dataset should have the following
     directory structure:
 
     root_dir
@@ -388,7 +386,7 @@ class StructData(Dataset):
     unique ID for each crystal (struct_id), and the second column recodes
     the value of target property.
 
-    struct_id_X.vasp: a CIF file that recodes the crystal structure, where
+    struct_id_X.vasp: a POSCAR file that recodes the crystal structure, where
     struct_id_X is the unique ID for the crystal structure X.
 
     Parameters
@@ -574,7 +572,7 @@ class StructData(Dataset):
         Convert structure into features.
         
         Args:
-            crystal: ASE Atoms object
+            crystal: Pymatgen Structure object
             struct_id: Structure identifier for warnings
             
         Returns:
