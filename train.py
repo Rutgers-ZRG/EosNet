@@ -284,7 +284,7 @@ def main():
     warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs)
     # main_scheduler = StepLR(optimizer, step_size=100, gamma=0.1)
     main_scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
-    # main_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - args.warmup_epochs, eta_min=1e-10)
+    # main_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - args.warmup_epochs, eta_min=0.01*args.lr)
     # main_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, threshold=0.01, threshold_mode='abs')
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[args.warmup_epochs])
     for epoch in range(args.start_epoch, args.epochs):
@@ -324,23 +324,26 @@ def main():
     
     # Save training set predictions
     print('---------Saving Training & Testing Set Results---------------')
-    test_size = len(id_test_loader.dataset)
-    subset_indices = torch.randperm(len(id_train_loader.dataset))[:test_size]
-    subset_train_dataset = torch.utils.data.Subset(id_train_loader.dataset, subset_indices)
-    subset_train_loader = torch.utils.data.DataLoader(
-        subset_train_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.workers,
-        shuffle=False,
-        drop_last=False,
-        persistent_workers=args.workers > 0,
-        collate_fn=collate_pool,
-        pin_memory=args.cuda
-    )
-    
-    # Evaluate on subset of training data
-    validate(subset_train_loader, model, criterion, normalizer, test=True, filename='train_results.csv')
-    
+    if args.save_to_disk:
+        validate(id_train_loader, model, criterion, normalizer, test=True, filename='train_results.csv')
+    else:
+        test_size = len(id_test_loader.dataset)
+        subset_indices = torch.randperm(len(id_train_loader.dataset))[:test_size]
+        subset_train_dataset = torch.utils.data.Subset(id_train_loader.dataset, subset_indices)
+        subset_train_loader = torch.utils.data.DataLoader(
+            subset_train_dataset,
+            batch_size=args.batch_size,
+            num_workers=args.workers,
+            shuffle=False,
+            drop_last=False,
+            persistent_workers=args.workers > 0,
+            collate_fn=collate_pool,
+            pin_memory=args.cuda
+        )
+        
+        # Evaluate on subset of training data
+        validate(subset_train_loader, model, criterion, normalizer, test=True, filename='train_results.csv')
+
     # Save test set predictions
     validate(id_test_loader, model, criterion, normalizer, test=True, filename='test_results.csv')
 
