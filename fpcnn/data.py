@@ -451,7 +451,6 @@ class StructData(Dataset):
         
         # Create processed directory if it doesn't exist
         self.process_dir = os.path.join(self.root_dir, 'saved_npz_files')
-        os.makedirs(self.process_dir, exist_ok=True)
         
         self.processed_data = None
         
@@ -469,32 +468,11 @@ class StructData(Dataset):
         if all_batches_exist and not save_to_disk:
             self.load_dataset()
         elif save_to_disk:
+            os.makedirs(self.process_dir, exist_ok=True)
             self.save_dataset()
             self.load_dataset()
         else:
-            self.processed_data = []
-            for i in range(0, self.total_size, self.batch_size):
-                end_index = min(i + self.batch_size, self.total_size)
-                
-                if self.drop_last and end_index - i < self.batch_size:
-                    break
-                    
-                # Process batch
-                batch = []
-                for j in range(i, end_index):
-                    struct_id, target = self.id_prop_data[j]
-                    crystal = self.read_structure(struct_id)
-                    atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
-                    
-                    # Convert to tensors immediately
-                    processed_features = (
-                        torch.FloatTensor(atom_fea),
-                        torch.FloatTensor(nbr_fea),
-                        torch.LongTensor(nbr_fea_idx)
-                    )
-                    batch.append((processed_features, target, struct_id))
-                
-                self.processed_data.extend(batch)
+            self.processed_data = None
 
     def __len__(self):
         return len(self.id_prop_data)
