@@ -294,4 +294,49 @@ For CGCNN framework, please cite:
 ```
 
 If you use [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library, please cite:
+```@article{taoAcceleratingStructuralOptimization2024,
+  title = {Accelerating Structural Optimization through Fingerprinting Space Integration on the Potential Energy Surface},
+  author = {Tao, Shuo and Shao, Xuecheng and Zhu, Li},
+  year = {2024},
+  month = mar,
+  journal = {J. Phys. Chem. Lett.},
+  volume = {15},
+  number = {11},
+  pages = {3185--3190},
+  doi = {10.1021/acs.jpclett.4c00275},
+  url = {https://pubs.acs.org/doi/10.1021/acs.jpclett.4c00275}
+}
 ```
+
+If you use [C implementation](https://github.com/zhuligs/fplib) of the Fingerprint Library, please cite:
+```
+@article{zhuFingerprintBasedMetric2016,
+  title = {A Fingerprint Based Metric for Measuring Similarities of Crystalline Structures},
+  author = {Zhu, Li and Amsler, Maximilian and Fuhrer, Tobias and Schaefer, Bastian and Faraji, Somayeh and Rostami, Samare and Ghasemi, S. Alireza and Sadeghi, Ali and Grauzinyte, Migle and Wolverton, Chris and Goedecker, Stefan},
+  year = {2016},
+  month = jan,
+  journal = {The Journal of Chemical Physics},
+  volume = {144},
+  number = {3},
+  pages = {034203},
+  doi = {10.1063/1.4940026},
+  url = {https://doi.org/10.1063/1.4940026}
+}
+```
+
+For GOM Fingerprint methodology, please cite:
+```
+@article{sadeghiMetricsMeasuringDistances2013,
+  title = {Metrics for Measuring Distances in Configuration Spaces},
+  author = {Sadeghi, Ali and Ghasemi, S. Alireza and Schaefer, Bastian and Mohr, Stephan and Lill, Markus A. and Goedecker, Stefan},
+  year = {2013},
+  month = nov,
+  journal = {The Journal of Chemical Physics},
+  volume = {139},
+  number = {18},
+  pages = {184118},
+  doi = {10.1063/1.4828704},
+  url = {https://pubs.aip.org/aip/jcp/article/317391}
+}
+```
+
