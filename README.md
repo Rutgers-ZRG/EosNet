@@ -1,5 +1,9 @@
 # EOSNet: Embedded Overlap Structures for Graph Neural Networks
 
+<p align="center">
+  <img src="EOSNet_TOC.png" width="65%" alt="EOSNet TOC">
+</p>
+
 **Note**: This EOSNet package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
 
 ## Change log
@@ -254,7 +258,22 @@ python predict.py pre-trained.pth.tar --save_to_disk false --test root_dir
 
 ## How to cite
 
-Please cite the following work if you want to use EOSNet:
+Please cite the our newly published work if you use EOSNet in your research:
+
+```
+@article{taoEOSnetEmbeddedOverlap2025,
+  author = {Tao, Shuo and Zhu, Li},
+  title = {EOSnet: Embedded Overlap Structures for Graph Neural Networks in Predicting Material Properties},
+  journal = {J. Phys. Chem. Lett.},
+  volume = {16},
+  number = {XXX},
+  pages = {717-724},
+  year = {2025},
+  doi = {10.1021/acs.jpclett.4c03179},
+  URL = { https://doi.org/10.1021/acs.jpclett.4c03179},
+  eprint = { https://doi.org/10.1021/acs.jpclett.4c03179}
+}
+```
 
 For CGCNN framework, please cite:
 ```
