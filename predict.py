@@ -183,6 +183,22 @@ def main():
 
 
 def validate(val_loader, model, normalizer, test=False):
+    # Create StructData instance here before using it
+    dataset = StructData(
+        id_prop_data=[(struct_id, target) for struct_id, target in val_loader.dataset],
+        root_dir=args.structpath,
+        max_num_nbr=model_args.max_num_nbr,
+        radius=model_args.radius,
+        dmin=model_args.dmin,
+        step=model_args.step,
+        var=model_args.var,
+        nx=model_args.nx,
+        lmax=model_args.lmax,
+        batch_size=args.batch_size,
+        drop_last=False,
+        save_to_disk=args.save_to_disk
+    )
+
     # Always initialize these variables
     test_preds = []
     test_struct_ids = []
