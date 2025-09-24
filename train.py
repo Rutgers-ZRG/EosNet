@@ -92,6 +92,8 @@ parser.add_argument('--print-freq', '-p', default=10, type=int,
                     help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--fine-tune', default='', type=str, metavar='PATH',
+                    help='path to pre-trained model for fine-tuning (default: none)')
 train_group = parser.add_mutually_exclusive_group()
 train_group.add_argument('--train-ratio', default=None, type=float, metavar='N',
                     help='number of training data to be loaded (default none)')
@@ -266,8 +268,29 @@ def main():
     else:
         raise NameError('Only SGD or Adam is allowed as --optim')
 
+    # optionally load pre-trained model for fine-tuning
+    if args.fine_tune:
+        if os.path.isfile(args.fine_tune):
+            print("=> loading pre-trained model for fine-tuning '{}'".format(args.fine_tune))
+            checkpoint = torch.load(args.fine_tune, map_location=device)
+            
+            pretrained_args = checkpoint.get('args', {})
+            pretrained_task = pretrained_args.get('task', 'unknown')
+            if pretrained_task != args.task:
+                print("ERROR: Task mismatch! Pre-trained model task: '{}', current task: '{}'".format(
+                    pretrained_task, args.task))
+                print("Fine-tuning requires the same task type. Terminating.")
+                sys.exit(1)
+            
+            model.load_state_dict(checkpoint['state_dict'])
+            print("=> loaded pre-trained model '{}' (task: {})".format(args.fine_tune, pretrained_task))
+            print("=> Initializing new normalizer for fine-tuning dataset")
+        else:
+            print("=> no pre-trained model found at '{}'".format(args.fine_tune))
+            sys.exit(1)
+    
     # optionally resume from a checkpoint
-    if args.resume:
+    elif args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
@@ -315,17 +338,28 @@ def main():
             'optimizer': optimizer.state_dict(),
             'normalizer': normalizer.state_dict(),
             'args': vars(args)
-        }, is_best)
+        }, is_best, fine_tune=bool(args.fine_tune))
 
     # test best model
     print('---------Evaluate Model on Test Set---------------')
-    best_checkpoint = torch.load('model_best.pth.tar')
+    if args.fine_tune:
+        best_model_file = 'model_ft_best.pth.tar'
+    else:
+        best_model_file = 'model_best.pth.tar'
+    best_checkpoint = torch.load(best_model_file)
     model.load_state_dict(best_checkpoint['state_dict'])
     
     # Save training set predictions
     print('---------Saving Training & Testing Set Results---------------')
+    if args.fine_tune:
+        train_results_file = 'ft_train_results.csv'
+        test_results_file = 'ft_test_results.csv'
+    else:
+        train_results_file = 'train_results.csv'
+        test_results_file = 'test_results.csv'
+    
     if args.save_to_disk:
-        validate(id_train_loader, model, criterion, normalizer, test=True, filename='train_results.csv')
+        validate(id_train_loader, model, criterion, normalizer, test=True, filename=train_results_file)
     else:
         test_size = len(id_test_loader.dataset)
         subset_indices = torch.randperm(len(id_train_loader.dataset))[:test_size]
@@ -342,10 +376,10 @@ def main():
         )
         
         # Evaluate on subset of training data
-        validate(subset_train_loader, model, criterion, normalizer, test=True, filename='train_results.csv')
+        validate(subset_train_loader, model, criterion, normalizer, test=True, filename=train_results_file)
 
     # Save test set predictions
-    validate(id_test_loader, model, criterion, normalizer, test=True, filename='test_results.csv')
+    validate(id_test_loader, model, criterion, normalizer, test=True, filename=test_results_file)
 
 
 def train(id_loader, model, criterion, optimizer, epoch, normalizer):
@@ -754,10 +788,18 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
+def save_checkpoint(state, is_best, fine_tune=False, filename='checkpoint.pth.tar'):
+    """Save model checkpoint with different filenames for fine-tuning mode. """
+    if fine_tune:
+        checkpoint_file = 'checkpoint_ft.pth.tar'
+        best_model_file = 'model_ft_best.pth.tar'
+    else:
+        checkpoint_file = filename
+        best_model_file = 'model_best.pth.tar'
+    
+    torch.save(state, checkpoint_file)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(checkpoint_file, best_model_file)
 
 
 def adjust_learning_rate(optimizer, epoch, k):
