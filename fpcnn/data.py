@@ -11,15 +11,72 @@ from math import comb
 from functools import reduce, lru_cache
 
 import numpy as np
-import fplib
-from pymatgen.core.structure import Structure
-from pymatgen.io.ase import AseAtomsAdaptor
+try:
+    import torch_fplib
+    _USE_TORCH_FPLIB = True
+except ImportError:
+    _USE_TORCH_FPLIB = False
+    try:
+        import libfp as fplib
+    except ImportError:
+        import fplib
 from ase.io import read as ase_read
+from ase.neighborlist import neighbor_list
+from ase import Atoms
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
 from sklearn.utils.class_weight import compute_class_weight
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _atoms_to_cell(atoms):
+    """Convert ASE Atoms to (lat, rxyz, types, znucl) tuple for torch_fplib.
+
+    types are 1-indexed (first-occurrence ordering, same as POSCAR convention).
+    """
+    lat = np.array(atoms.cell)
+    rxyz = atoms.get_positions()
+    znucl_list = []
+    for z in atoms.numbers:
+        if z not in znucl_list:
+            znucl_list.append(z)
+    znucl = np.array(znucl_list, dtype=int)
+    z_to_type = {z: i + 1 for i, z in enumerate(znucl_list)}
+    types = np.array([z_to_type[z] for z in atoms.numbers], dtype=int)
+    return (lat, rxyz, types, znucl)
+
+
+def _detect_data_format(root_dir):
+    """Auto-detect dataset format: 'extxyz' or 'vasp'."""
+    if os.path.isfile(os.path.join(root_dir, 'data.extxyz')):
+        return 'extxyz'
+    for f in os.listdir(root_dir):
+        if f.endswith('.vasp'):
+            return 'vasp'
+    raise FileNotFoundError(
+        f"No data.extxyz or .vasp files found in {root_dir}")
+
+
+def _load_extxyz(root_dir):
+    """Load all structures from data.extxyz, return {struct_id: Atoms} dict."""
+    extxyz_path = os.path.join(root_dir, 'data.extxyz')
+    all_atoms = ase_read(extxyz_path, index=':')
+    atoms_dict = {}
+    for i, atoms in enumerate(all_atoms):
+        sid = str(atoms.info.get('struct_id',
+                  atoms.info.get('config_type', f'struct_{i}')))
+        atoms_dict[sid] = atoms
+    return atoms_dict
+
+
+# ---------------------------------------------------------------------------
+# Data loaders / collate functions (unchanged)
+# ---------------------------------------------------------------------------
 
 def get_train_val_test_loader(dataset, classification=False,
                               collate_fn=default_collate,
@@ -150,7 +207,7 @@ def get_train_val_test_loader(dataset, classification=False,
 def collate_pool(dataset_list):
     """
     Collate a list of data and return a batch for predicting crystal properties.
-    
+
     Parameters
     ----------
 
@@ -193,38 +250,38 @@ def collate_pool(dataset_list):
             batch_target.append(torch.tensor([float(target)], dtype=torch.float))
             batch_struct_ids.append(struct_id)
         return torch.cat(batch_target, dim=0), batch_struct_ids
-    
+
     # StructData
     elif isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 3:
         batch_atom_fea, batch_nbr_fea, batch_nbr_fea_idx = [], [], []
         crystal_atom_idx = []
         batch_target = []
         batch_struct_ids = []
-        
+
         base_idx = 0
         for (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id in dataset_list:
             n_i = atom_fea.shape[0]
-            
+
             batch_atom_fea.append(atom_fea)
             batch_nbr_fea.append(nbr_fea)
             batch_nbr_fea_idx.append(nbr_fea_idx + base_idx)
-            
+
             crystal_atom_idx.append(torch.LongTensor(np.arange(n_i) + base_idx))
             if not isinstance(target, torch.Tensor):
                 target = torch.tensor([float(target)], dtype=torch.float)
             batch_target.append(target)
             batch_struct_ids.append(struct_id)
-            
+
             base_idx += n_i
-        
+
         # Stack features
         batch_atom_fea = torch.cat(batch_atom_fea, dim=0)
         batch_nbr_fea = torch.cat(batch_nbr_fea, dim=0)
         batch_nbr_fea_idx = torch.cat(batch_nbr_fea_idx, dim=0)
-            
+
         # Stack targets
         batch_target = torch.stack(batch_target)
-        
+
         return (batch_atom_fea,
                 batch_nbr_fea,
                 batch_nbr_fea_idx,
@@ -233,6 +290,150 @@ def collate_pool(dataset_list):
                 batch_struct_ids
     else:
         raise ValueError("Unsupported dataset type")
+
+
+def collate_pool_e3nn(dataset_list):
+    """
+    Collate for e3nn model format.
+
+    For StructData with model_type='e3nn':
+      ((atom_fea, edge_index, edge_vec), target, struct_id)
+
+    Returns
+    -------
+    batch_atom_fea: torch.Tensor (N, orig_atom_fea_len)
+    batch_edge_index: torch.LongTensor (2, E)
+    batch_edge_vec: torch.Tensor (E, 3)
+    crystal_atom_idx: list of LongTensor
+    batch_target: torch.Tensor
+    batch_struct_ids: list
+    """
+    # IdTargetData path
+    if isinstance(dataset_list[0], tuple) and len(dataset_list[0]) == 2:
+        batch_target, batch_struct_ids = [], []
+        for struct_id, target in dataset_list:
+            batch_target.append(torch.tensor([float(target)], dtype=torch.float))
+            batch_struct_ids.append(struct_id)
+        return torch.cat(batch_target, dim=0), batch_struct_ids
+
+    # StructData e3nn path
+    batch_atom_fea = []
+    batch_edge_index = []
+    batch_edge_vec = []
+    crystal_atom_idx = []
+    batch_target = []
+    batch_struct_ids = []
+
+    base_idx = 0
+    for (atom_fea, edge_index, edge_vec), target, struct_id in dataset_list:
+        n_i = atom_fea.shape[0]
+
+        batch_atom_fea.append(atom_fea)
+        batch_edge_index.append(edge_index + base_idx)
+        batch_edge_vec.append(edge_vec)
+
+        crystal_atom_idx.append(torch.LongTensor(np.arange(n_i) + base_idx))
+        if not isinstance(target, torch.Tensor):
+            target = torch.tensor([float(target)], dtype=torch.float)
+        batch_target.append(target)
+        batch_struct_ids.append(struct_id)
+
+        base_idx += n_i
+
+    return (torch.cat(batch_atom_fea, dim=0),
+            torch.cat(batch_edge_index, dim=1),
+            torch.cat(batch_edge_vec, dim=0),
+            crystal_atom_idx), \
+            torch.stack(batch_target), \
+            batch_struct_ids
+
+
+# ---------------------------------------------------------------------------
+# Graph construction (now using ASE neighbor_list — no pymatgen)
+# ---------------------------------------------------------------------------
+
+def get_edge_data(atoms, radius):
+    """Build edge list with displacement vectors for e3nn.
+
+    Uses ASE's C-implemented neighbor_list with PBC support.
+
+    Parameters
+    ----------
+    atoms: ASE Atoms object
+    radius: float, cutoff radius
+
+    Returns
+    -------
+    edge_index: np.array (2, num_edges) — [source, destination]
+    edge_vec: np.array (num_edges, 3) — displacement vectors
+    """
+    i_idx, j_idx, D_vec = neighbor_list('ijD', atoms, radius)
+    # Sort by (source atom, distance) for deterministic ordering
+    distances = np.linalg.norm(D_vec, axis=1)
+    sort_order = np.lexsort((distances, i_idx))
+    edge_index = np.array([i_idx[sort_order], j_idx[sort_order]], dtype=np.int64)
+    edge_vec = D_vec[sort_order].astype(np.float64)
+    return edge_index, edge_vec
+
+
+def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None, raw_nbr_data=None):
+    """Get neighbor information using ASE's C neighbor list.
+
+    Args:
+        atoms: ASE Atoms object
+        radius: Cutoff radius for neighbor search
+        max_num_nbr: Maximum number of neighbors per atom
+        struct_id: Optional structure identifier for warnings
+        raw_nbr_data: optional (i_idx, j_idx, d_scalar, D_vec) to skip recomputation
+
+    Returns:
+        nbr_indices: np.array [n_atoms, max_num_nbr]
+        nbr_distances: np.array [n_atoms, max_num_nbr]
+        displacement_vectors: np.array [n_atoms, max_num_nbr, 3]
+    """
+    if raw_nbr_data is not None:
+        i_idx, j_idx, d_scalar, D_vec = raw_nbr_data
+    else:
+        i_idx, j_idx, d_scalar, D_vec = neighbor_list('ijdD', atoms, radius)
+
+    n_atoms = len(atoms)
+    nbr_indices = np.zeros((n_atoms, max_num_nbr), dtype=np.int64)
+    nbr_distances = np.full((n_atoms, max_num_nbr), radius + 1.0)
+    displacement_vectors = np.zeros((n_atoms, max_num_nbr, 3))
+
+    for atom_i in range(n_atoms):
+        mask = (i_idx == atom_i)
+        local_j = j_idx[mask]
+        local_d = d_scalar[mask]
+        local_D = D_vec[mask]
+
+        # Sort by distance
+        order = np.argsort(local_d)
+        local_j = local_j[order]
+        local_d = local_d[order]
+        local_D = local_D[order]
+
+        n_nbr = len(local_j)
+        if n_nbr < max_num_nbr:
+            if struct_id:
+                warnings.warn(f'{struct_id} not find enough neighbors to '
+                              f'build graph. If it happens frequently, '
+                              f'consider increase radius.')
+            nbr_indices[atom_i, :n_nbr] = local_j
+            nbr_distances[atom_i, :n_nbr] = local_d
+            displacement_vectors[atom_i, :n_nbr] = local_D
+            # Pad with last valid neighbor
+            if n_nbr > 0:
+                nbr_indices[atom_i, n_nbr:] = local_j[-1]
+                nbr_distances[atom_i, n_nbr:] = local_d[-1]
+                displacement_vectors[atom_i, n_nbr:] = local_D[-1]
+        else:
+            nbr_indices[atom_i] = local_j[:max_num_nbr]
+            nbr_distances[atom_i] = local_d[:max_num_nbr]
+            displacement_vectors[atom_i] = local_D[:max_num_nbr]
+
+    return nbr_indices, nbr_distances, displacement_vectors
+
 
 class GaussianDistance(object):
     """
@@ -279,32 +480,35 @@ class GaussianDistance(object):
                       self.var**2)
 
 
+# ---------------------------------------------------------------------------
+# Datasets
+# ---------------------------------------------------------------------------
+
 class IdTargetData(Dataset):
-    """ 
-    A simple dataset to load just the struct_id and target from the dataset's id_prop.csv.
-    This is used for sampling targets without loading the full crystal structure data.
-
-    Parameters
-    ----------
-
-    root_dir: str
-        The path to the root directory of the dataset
-    random_seed: int
-        Random seed for shuffling the dataset.
-
-    Returns
-    -------
-
-    struct_id: str or int
-    target: torch.Tensor shape (1, )
     """
-    def __init__(self, root_dir, random_seed=42):
+    A simple dataset to load just the struct_id and target.
+    Supports both id_prop.csv (vasp) and data.extxyz formats.
+    """
+    def __init__(self, root_dir, random_seed=42, data_format='auto'):
         self.root_dir = root_dir
-        id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
-        assert os.path.isfile(id_prop_file), 'id_prop.csv does not exist!'
-        with open(id_prop_file) as f:
-            reader = csv.reader(f, delimiter=',')
-            self.id_prop_data = [row for row in reader]
+
+        if data_format == 'auto':
+            data_format = _detect_data_format(root_dir)
+        self.data_format = data_format
+
+        if data_format == 'extxyz':
+            atoms_dict = _load_extxyz(root_dir)
+            self.id_prop_data = []
+            for sid, atoms in atoms_dict.items():
+                target = atoms.info.get('target', 0.0)
+                self.id_prop_data.append([sid, str(target)])
+        else:
+            id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
+            assert os.path.isfile(id_prop_file), 'id_prop.csv does not exist!'
+            with open(id_prop_file) as f:
+                reader = csv.reader(f, delimiter=',')
+                self.id_prop_data = [row for row in reader]
+
         random.seed(random_seed)
         random.shuffle(self.id_prop_data)
 
@@ -315,112 +519,32 @@ class IdTargetData(Dataset):
         struct_id, target = self.id_prop_data[idx]
         return struct_id, float(target)
 
-def get_neighbor_info(atoms, radius, max_num_nbr, struct_id=None):
-    """
-    Get neighbor information using pymatgen's get_all_neighbors.
-    
-    Args:
-        atoms: ASE Atoms object
-        radius: Cutoff radius for neighbor search
-        max_num_nbr: Maximum number of neighbors to consider
-        struct_id: Optional structure identifier for warnings
-        
-    Returns:
-        nbr_indices: Array of neighbor indices [n_atoms, max_num_nbr]
-        nbr_distances: Array of distances [n_atoms, max_num_nbr]
-        displacement_vectors: Array of displacement vectors [n_atoms, max_num_nbr, 3]
-    """
-    # Convert to pymatgen Structure
-    structure = AseAtomsAdaptor.get_structure(atoms)
-    
-    # Get all neighbors using pymatgen
-    all_nbrs = structure.get_all_neighbors(radius, include_index=True)
-    all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
-    
-    nbr_indices, nbr_distances, displacement_vectors = [], [], []
-    for nbr in all_nbrs:
-        n_nbr = len(nbr)
-        
-        if n_nbr < max_num_nbr:
-            if struct_id:
-                warnings.warn('{} not find enough neighbors to build graph. '
-                              'If it happens frequently, consider increase '
-                              'radius.'.format(struct_id))
-            
-            # Get the last valid neighbor for padding
-            last_idx = nbr[-1][2] if nbr else 0
-            last_dis = nbr[-1][1] if nbr else radius + 1.0
-            last_disp = nbr[-1][0].coords - nbr[-1][0].frac_coords if nbr else np.zeros(3)
-            
-            # Pad with the last valid neighbor
-            local_indices = list(map(lambda x: x[2], nbr)) + [last_idx] * (max_num_nbr - n_nbr)
-            local_distances = list(map(lambda x: x[1], nbr)) + [last_dis] * (max_num_nbr - n_nbr)
-            local_disps = list(map(lambda x: x[0].coords - x[0].frac_coords, nbr)) + [last_disp] * (max_num_nbr - n_nbr)
-        else:
-            # Take only max_num_nbr neighbors
-            local_indices = list(map(lambda x: x[2], nbr[:max_num_nbr]))
-            local_distances = list(map(lambda x: x[1], nbr[:max_num_nbr]))
-            local_disps = list(map(lambda x: x[0].coords - x[0].frac_coords, nbr[:max_num_nbr]))
-        
-        nbr_indices.append(local_indices)
-        nbr_distances.append(local_distances)
-        displacement_vectors.append(local_disps)
-    
-    return (np.array(nbr_indices), 
-            np.array(nbr_distances), 
-            np.array(displacement_vectors))
 
 class StructData(Dataset):
     """
-    The StructData dataset is a wrapper for a dataset where the crystal structures
-    are stored in the form of POSCAR files. The dataset should have the following
-    directory structure:
+    Dataset for crystal structures. Supports two formats:
 
-    root_dir
-    ├── id_prop.csv
-    ├── struct_id_0.vasp
-    ├── struct_id_0.vasp
-    ├── ...
+    1. POSCAR (.vasp) — original CGCNN format:
+       root_dir/
+       ├── id_prop.csv
+       ├── struct_id_0.vasp
+       └── ...
 
-    id_prop.csv: a CSV file with two columns. The first column recodes a
-    unique ID for each crystal (struct_id), and the second column recodes
-    the value of target property.
-
-    struct_id_X.vasp: a POSCAR file that recodes the crystal structure, where
-    struct_id_X is the unique ID for the crystal structure X.
+    2. Extended XYZ — single-file format:
+       root_dir/
+       └── data.extxyz   (struct_id and target in atoms.info)
 
     Parameters
     ----------
-
+    id_prop_data: list of [struct_id, target] pairs
     root_dir: str
-        The path to the root directory of the dataset
     max_num_nbr: int
-        The maximum number of neighbors while constructing the crystal graph
-    radius: float
-        The cutoff radius for searching neighbors, unit in Angstroms
-    dmin: float
-        The minimum distance for constructing GaussianDistance
-    step: float
-        The step size for constructing GaussianDistance
-    nx: int
-        Maximum number of neighbors to construct the Gaussian overlap matrix for atomic Fingerprint
-    lmax: int
-        Integer to control whether using s orbitals only or both s and p orbitals for
-        calculating the Guassian overlap matrix (0 for s orbitals only, other integers
-        will indicate that using both s and p orbitals)
-    num_workers: int
-        Number of workers to parallelize thed process of struct data loading
-    save_to_disk: bool
-        Whether to save the processed dataset to disk for faster future loading.
-
-    Returns
-    -------
-
-    atom_fea: torch.Tensor shape (nat, atom_fp_len)
-    nbr_fea: torch.Tensor shape (n_i, M, nbr_fea_len)
-    nbr_fea_idx: torch.LongTensor shape (n_i, M)
-    target: torch.Tensor shape (1, )
-    struct_id: str or int
+    radius: float (Angstroms)
+    nx: int — fingerprint dimension
+    lmax: int — 0 for s-orbital only
+    model_type: 'cgcnn' or 'e3nn'
+    data_format: 'auto', 'extxyz', or 'vasp'
+    atoms_dict: optional pre-loaded {struct_id: Atoms} dict
     """
     def __init__(self,
                  id_prop_data,
@@ -434,37 +558,57 @@ class StructData(Dataset):
                  lmax=0,
                  batch_size=64,
                  drop_last=False,
-                 save_to_disk=False):
+                 save_to_disk=False,
+                 model_type='cgcnn',
+                 data_format='auto',
+                 atoms_dict=None):
         self.root_dir = root_dir
         self.id_prop_data = id_prop_data
         self.max_num_nbr, self.radius = max_num_nbr, radius
+        self.model_type = model_type
         self.nx = nx
         self.lmax = lmax
         self.save_to_disk = save_to_disk
+        if save_to_disk and model_type == 'e3nn':
+            raise NotImplementedError(
+                'save_to_disk is not yet supported for e3nn model_type. '
+                'Use in-memory caching (save_to_disk=False) instead.')
         assert lmax == 0, 'p-orbitals is not supported at this time!'
         assert nx >= comb(max_num_nbr, 2), 'nx is too small for the given max_num_nbr!'
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.total_size = len(self.id_prop_data)
-        
+
+        # Data format and pre-loaded atoms
+        if data_format == 'auto':
+            data_format = _detect_data_format(root_dir)
+        self.data_format = data_format
+
+        if atoms_dict is not None:
+            self._atoms_dict = atoms_dict
+        elif data_format == 'extxyz':
+            self._atoms_dict = _load_extxyz(root_dir)
+        else:
+            self._atoms_dict = None  # read .vasp on demand
+
         self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step, var=var)
-        
+
         # Create processed directory if it doesn't exist
         self.process_dir = os.path.join(self.root_dir, 'saved_npz_files')
-        
+
         self.processed_data = None
-        
+
         if self.drop_last:
             self.num_batches = self.total_size // self.batch_size
         else:
             self.num_batches = (self.total_size + self.batch_size - 1) // self.batch_size
-        
-        # Check if all batch files exist
+
+        # Check if all batch files exist (vasp/cgcnn only)
         all_batches_exist = all(
             os.path.exists(os.path.join(self.process_dir, f'processed_data-{i+1}.npz'))
             for i in range(self.num_batches)
         )
-        
+
         if all_batches_exist and not save_to_disk:
             self.load_dataset()
         elif save_to_disk:
@@ -474,40 +618,80 @@ class StructData(Dataset):
         else:
             self.processed_data = None
 
+        # Fingerprint cache (populated lazily or via precompute)
+        self._fp_cache = {}
+        # Full processed-result cache: struct_id → (processed_features, target, struct_id)
+        self._processed_cache = {}
+        # O(1) lookup: struct_id → index in id_prop_data
+        self._sid_to_idx = {sid: i for i, (sid, _) in enumerate(self.id_prop_data)}
+
+    def _load_atoms(self, struct_id):
+        """Load ASE Atoms for a structure (from dict or .vasp file)."""
+        if self._atoms_dict is not None:
+            return self._atoms_dict[struct_id]
+        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
+        return ase_read(cell_file)
+
+    def _precompute_fingerprints(self):
+        """Batch-compute all GOM fingerprints using torch_fplib."""
+        import time
+        cutoff = np.float64(int(np.sqrt(self.radius)) * 3)
+        natx = int(self.nx)
+
+        struct_ids = list(dict.fromkeys(sid for sid, _ in self.id_prop_data))
+        cells = []
+        valid_ids = []
+        for sid in struct_ids:
+            try:
+                atoms = self._load_atoms(sid)
+                cells.append(_atoms_to_cell(atoms))
+                valid_ids.append(sid)
+            except Exception as e:
+                print(f"Warning: could not load {sid}: {e}")
+
+        t0 = time.time()
+        fps = torch_fplib.get_lfp_fast_batch(
+            cells, cutoff=cutoff, natx=natx, device='cpu')
+        dt = time.time() - t0
+        print(f"Precomputed {len(fps)} fingerprints in {dt:.1f}s "
+              f"({dt/len(fps)*1000:.1f}ms/struct)")
+
+        for sid, fp in zip(valid_ids, fps):
+            self._fp_cache[sid] = fp.numpy()
+
     def __len__(self):
         return len(self.id_prop_data)
-    
-    def read_types(self, cell_file):
-        buff = []
-        with open(cell_file) as f:
-            for line in f:
-                buff.append(line.split())
-        try:
-            typt = np.array(buff[5], int)
-        except:
-            del(buff[5])
-            typt = np.array(buff[5], int)
-        types = []
-        for i in range(len(typt)):
-            types += [i+1]*typt[i]
-        types = np.array(types, int)
-        return types
 
-    # @lru_cache(maxsize=None)
-    def get_fp_mat(self, cell_file):
-        atoms = ase_read(cell_file)
-        lat = atoms.cell[:]
-        rxyz = atoms.get_positions()
-        chem_nums = list(atoms.numbers)
-        znucl_list = reduce(lambda re, x: re+[x] if x not in re else re, chem_nums, [])
-        ntyp = len(znucl_list)
-        znucl = np.array(znucl_list, int)
-        types = self.read_types(cell_file)
-        cell = (lat, rxyz, types, znucl)
-        contract = False
+    def get_fp_mat(self, atoms_or_file, struct_id=None, ase_neighbors=None):
+        """Compute GOM fingerprint matrix.
+
+        Args:
+            atoms_or_file: ASE Atoms object (preferred) or path to .vasp file
+            struct_id: cache key (derived from filename if not given)
+            ase_neighbors: optional (i_idx, j_idx, D_vec) from ASE neighbor_list
+                           to avoid redundant neighbor search in torch_fplib
+        """
+        # Determine cache key
+        if struct_id is not None:
+            cache_key = struct_id
+        elif isinstance(atoms_or_file, str):
+            cache_key = os.path.splitext(os.path.basename(atoms_or_file))[0]
+        else:
+            cache_key = None
+
+        if cache_key and cache_key in self._fp_cache:
+            return self._fp_cache[cache_key]
+
+        # Get cell tuple
+        if isinstance(atoms_or_file, Atoms):
+            cell = _atoms_to_cell(atoms_or_file)
+        else:
+            cell = _atoms_to_cell(ase_read(atoms_or_file))
+
+        lat, rxyz, types, znucl = cell
         natx = int(self.nx)
         lmax = int(self.lmax)
-        cutoff = np.float64(int(np.sqrt(self.radius))*3) # Shorter cutoff for GOM
+        cutoff = np.float64(int(np.sqrt(self.radius)) * 3)
 
         if lmax == 0:
             lseg = 1
@@ -517,111 +701,119 @@ class StructData(Dataset):
             orbital = 'sp'
 
         if len(rxyz) != len(types) or len(set(types)) != len(znucl):
-            print("Structure file: " +
-                  str(cell_file.split('/')[-1]) +
-                  " is erroneous, please double check!")
-            if contract:
-                fp = np.zeros((len(rxyz), 20), dtype=np.float64)
-            else:
-                fp = np.zeros((len(rxyz), lseg*natx), dtype=np.float64)
+            print(f"Structure {struct_id or 'unknown'} is erroneous!")
+            fp = np.zeros((len(rxyz), lseg * natx), dtype=np.float64)
         else:
-            if contract:
-                fp = fplib.get_sfp(cell,
-                                   cutoff=cutoff,
-                                   natx=natx,
-                                   log=False,
-                                   orbital=orbital) # Contracted FP
-                tmp_fp = []
-                for i in range(len(fp)):
-                    if len(fp[i]) < 20:
-                        tmp_fp_at = fp[i].tolist() + [0.0]*(20 - len(fp[i]))
-                        tmp_fp.append(tmp_fp_at)
-                fp = np.array(tmp_fp, dtype=np.float64)
+            if (_USE_TORCH_FPLIB and ase_neighbors is not None
+                    and cutoff <= self.radius):
+                # Fast path: reuse ASE neighbor list, skip redundant search
+                i_idx, j_idx, D_vec = ase_neighbors
+                fp = torch_fplib.get_lfp_from_ase_neighbors(
+                    rxyz, atoms_or_file.numbers, i_idx, j_idx, D_vec,
+                    cutoff=cutoff, natx=natx, device='cpu').numpy()
+            elif _USE_TORCH_FPLIB:
+                fp = torch_fplib.get_lfp_fast(
+                    cell, cutoff=cutoff, natx=natx,
+                    orbital=orbital, device='cpu').numpy()
             else:
-                fp = fplib.get_lfp(cell,
-                                   cutoff=cutoff,
-                                   natx=natx,
-                                   log=False,
-                                   orbital=orbital) # Long FP
+                fp = fplib.get_lfp(cell, cutoff=cutoff, natx=natx,
+                                   log=False, orbital=orbital)
+
+        if cache_key:
+            self._fp_cache[cache_key] = fp
         return fp
 
-    def process_structure(self, crystal, struct_id):
-        """
-        Convert structure into features.
-        
-        Args:
-            crystal: Pymatgen Structure object
-            struct_id: Structure identifier for warnings
-            
-        Returns:
-            atom_fea: Atom features [n_atoms, atom_fea_len]
-            nbr_fea: Bond features [n_atoms, max_num_nbr, bond_fea_len]
-            nbr_fea_idx: Neighbor indices [n_atoms, max_num_nbr]
-        """
-        # Convert to ASE atoms
-        atoms = crystal.to_ase_atoms()
-        
-        # Get neighbor information
-        nbr_indices, nbr_distances, _ = get_neighbor_info(
-            atoms, self.radius, self.max_num_nbr, struct_id=struct_id
-        )
-        
-        # One-hot encoding
+    def _build_atom_features(self, atoms, struct_id, ase_neighbors=None):
+        """Build one-hot + GOM fingerprint atom features."""
         chem_nums = list(atoms.numbers)
         max_atomic_number = max(max(chem_nums), 112)
-        one_hot_encodings = []
-        for atom in atoms:
-            encoding = [0] * (max_atomic_number + 1)
-            encoding[atom.number] = 1
-            one_hot_encodings.append(encoding)
-        one_hot_encodings = np.array(one_hot_encodings, dtype=np.int32)
-        
-        # Fingerprint features
+        one_hot = np.zeros((len(atoms), max_atomic_number + 1), dtype=np.int32)
+        for i, z in enumerate(chem_nums):
+            one_hot[i, z] = 1
+
         comb_n_nbr = comb(self.max_num_nbr, 2)
-        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
-        fp_mat = self.get_fp_mat(cell_file)
+        fp_mat = self.get_fp_mat(atoms, struct_id=struct_id,
+                                 ase_neighbors=ase_neighbors)
         fp_mat = fp_mat[:, :comb_n_nbr]
         fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
-        fp_mat = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
-        atom_fea = np.hstack((one_hot_encodings, fp_mat))
-        # atom_fea = fp_mat / np.linalg.norm(fp_mat, axis=-1, keepdims=True)
-        # atom_fea = one_hot_encodings
-        
-        # Process bond features using GaussianDistance
+        norms = np.linalg.norm(fp_mat, axis=-1, keepdims=True)
+        norms = np.where(norms < 1e-30, 1.0, norms)
+        fp_mat = fp_mat / norms
+        return np.hstack((one_hot, fp_mat))
+
+    def process_structure(self, atoms, struct_id):
+        """Convert ASE Atoms into features for CGCNN model.
+
+        Args:
+            atoms: ASE Atoms object
+            struct_id: Structure identifier
+        """
+        # Single ASE neighbor search for both graph edges and fingerprints
+        i_idx, j_idx, d_scalar, D_vec = neighbor_list('ijdD', atoms, self.radius)
+        nbr_indices, nbr_distances, _ = get_neighbor_info(
+            atoms, self.radius, self.max_num_nbr, struct_id=struct_id,
+            raw_nbr_data=(i_idx, j_idx, d_scalar, D_vec)
+        )
+        atom_fea = self._build_atom_features(atoms, struct_id,
+                                              ase_neighbors=(i_idx, j_idx, D_vec))
         nbr_fea = self.gdf.expand(nbr_distances)
-        
         return atom_fea, nbr_fea, nbr_indices
+
+    def process_structure_e3nn(self, atoms, struct_id):
+        """Build graph data in e3nn format from ASE Atoms.
+
+        Returns:
+            atom_fea, edge_index, edge_vec
+        """
+        # Single ASE neighbor search for both edges and fingerprints
+        i_idx, j_idx, D_vec = neighbor_list('ijD', atoms, self.radius)
+        distances = np.linalg.norm(D_vec, axis=1)
+        sort_order = np.lexsort((distances, i_idx))
+        edge_index = np.array([i_idx[sort_order], j_idx[sort_order]], dtype=np.int64)
+        edge_vec = D_vec[sort_order].astype(np.float64)
+        atom_fea = self._build_atom_features(atoms, struct_id,
+                                              ase_neighbors=(i_idx, j_idx, D_vec))
+        return atom_fea, edge_index, edge_vec
 
     def __getitem__(self, idx):
         """Get a single data point"""
         struct_id, target = self.id_prop_data[idx]
-        
-        # If data is already processed
+
+        # Check in-memory cache first (persists across epochs)
+        if struct_id in self._processed_cache:
+            return self._processed_cache[struct_id]
+
+        # If data is already processed (cgcnn format only)
         if hasattr(self, 'processed_data') and self.processed_data is not None:
             return self.processed_data[idx]
-        
-        # Otherwise process on-the-fly
-        crystal = self.read_structure(struct_id)
-        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
-        
-        # Convert to tensors
-        processed_features = (
-            torch.FloatTensor(atom_fea),
-            torch.FloatTensor(nbr_fea),
-            torch.LongTensor(nbr_fea_idx)
-        )
-        return (processed_features, target, struct_id)
 
-    def read_structure(self, struct_id):
-        """Read structure from file"""
-        cell_file = os.path.join(self.root_dir, struct_id + '.vasp')
-        crystal = Structure.from_file(cell_file)
-        return crystal
+        # Load ASE Atoms (no pymatgen)
+        atoms = self._load_atoms(struct_id)
+
+        if self.model_type == 'e3nn':
+            atom_fea, edge_index, edge_vec = \
+                self.process_structure_e3nn(atoms, struct_id)
+            processed_features = (
+                torch.FloatTensor(atom_fea),
+                torch.LongTensor(edge_index),
+                torch.FloatTensor(edge_vec.astype(np.float32))
+            )
+        else:
+            atom_fea, nbr_fea, nbr_fea_idx = \
+                self.process_structure(atoms, struct_id)
+            processed_features = (
+                torch.FloatTensor(atom_fea),
+                torch.FloatTensor(nbr_fea),
+                torch.LongTensor(nbr_fea_idx)
+            )
+        result = (processed_features, target, struct_id)
+        self._processed_cache[struct_id] = result
+        return result
 
     def process_item(self, idx):
         struct_id, target = self.id_prop_data[idx]
-        crystal = self.read_structure(struct_id)
-        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+        atoms = self._load_atoms(struct_id)
+        atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(atoms, struct_id)
 
         if self.save_to_disk:
             return (atom_fea, nbr_fea, nbr_fea_idx), target, struct_id
@@ -637,10 +829,10 @@ class StructData(Dataset):
         Loads only the required batch data
         """
         self.processed_data = []
-        
+
         # Get the struct_ids we need
         batch_struct_ids = set(sid for sid, _ in self.id_prop_data)
-        
+
         # If loading full dataset
         if len(batch_struct_ids) == self.total_size:
             for batch_idx in range(1, self.num_batches + 1):
@@ -665,7 +857,7 @@ class StructData(Dataset):
                     struct_id, _ = self.id_prop_data[j]
                     struct_to_batch[struct_id] = batch_idx
                 batch_idx += 1
-            
+
             # Load only needed batches
             needed_batches = set(struct_to_batch[sid] for sid in batch_struct_ids)
             for batch_idx in needed_batches:
@@ -687,23 +879,23 @@ class StructData(Dataset):
         Saves processed data in batch-sized shards
         """
         print("Processing and saving dataset in batches...")
-        
+
         for batch_idx in range(1, self.num_batches + 1):
             start_idx = (batch_idx - 1) * self.batch_size
             end_idx = min(start_idx + self.batch_size, self.total_size)
-            
+
             # Process batch
             batch_data = []
             for j in range(start_idx, end_idx):
                 struct_id, target = self.id_prop_data[j]
-                crystal = self.read_structure(struct_id)
-                atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(crystal, struct_id)
+                atoms = self._load_atoms(struct_id)
+                atom_fea, nbr_fea, nbr_fea_idx = self.process_structure(atoms, struct_id)
                 batch_data.append(((atom_fea, nbr_fea, nbr_fea_idx), target, struct_id))
-            
+
             # Save batch
             save_path = os.path.join(self.process_dir, f'processed_data-{batch_idx}.npz')
             np.savez_compressed(save_path, data=np.array(batch_data, dtype=object), allow_pickle=True)
-        
+
         print(f"Saved {len(self.id_prop_data)} data points in {self.num_batches} batches")
 
     def __iter__(self):
@@ -712,6 +904,10 @@ class StructData(Dataset):
         return self
 
     def clear_cache(self):
-        """Clear any cached data"""
+        """Clear all cached data to free memory."""
         if hasattr(self, 'processed_data'):
             self.processed_data = None
+        if hasattr(self, '_fp_cache'):
+            self._fp_cache.clear()
+        if hasattr(self, '_processed_cache'):
+            self._processed_cache.clear()

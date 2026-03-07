@@ -23,8 +23,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.multiprocessing import set_sharing_strategy, get_context
 
 from fpcnn.data import IdTargetData, StructData
-from fpcnn.data import collate_pool, get_train_val_test_loader
-from fpcnn.model import CrystalGraphConvNet
+from fpcnn.data import collate_pool, collate_pool_e3nn, get_train_val_test_loader
+from fpcnn.model import CrystalGraphConvNet, EOSNetV2
 
 parser = argparse.ArgumentParser(description='EOSNet: Embedded Overlap Structures for Graph Neural Networks')
 # Explicitly add arguments for data options
@@ -120,6 +120,18 @@ parser.add_argument('--n-conv', default=3, type=int, metavar='N',
                     help='number of conv layers')
 parser.add_argument('--n-h', default=1, type=int, metavar='N',
                     help='number of hidden layers after pooling')
+parser.add_argument('--model-type', default='cgcnn', type=str,
+                    choices=['cgcnn', 'e3nn'],
+                    help='Model backbone type: cgcnn (original) or e3nn (v2)')
+parser.add_argument('--irreps-hidden', default='32x0e+16x1o+8x2e', type=str,
+                    help='Hidden irreps for e3nn model (default: 32x0e+16x1o+8x2e)')
+parser.add_argument('--max-ell', default=2, type=int,
+                    help='Max spherical harmonic order for e3nn (default: 2)')
+parser.add_argument('--num-radial-basis', default=16, type=int,
+                    help='Number of radial basis functions for e3nn (default: 16)')
+parser.add_argument('--data-format', default='auto',
+                    choices=['auto', 'extxyz', 'vasp'],
+                    help='Data format: auto (detect), extxyz, or vasp (default: auto)')
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -146,19 +158,32 @@ def main():
     global args, best_mae_error, class_weights
     # Load IdTargetData
     id_target_dataset = IdTargetData(root_dir=args.root_dir,
-                                     random_seed=args.random_seed)
-    
+                                     random_seed=args.random_seed,
+                                     data_format=args.data_format)
+    data_format = id_target_dataset.data_format
+
+    # Pre-load atoms for extxyz (shared across all StructData instances)
+    if data_format == 'extxyz':
+        from fpcnn.data import _load_extxyz
+        shared_atoms_dict = _load_extxyz(args.root_dir)
+        print(f"Loaded {len(shared_atoms_dict)} structures from extxyz")
+    else:
+        shared_atoms_dict = None
+
+    # Select collate function based on model type
+    active_collate_fn = collate_pool_e3nn if args.model_type == 'e3nn' else collate_pool
+
     # Get train/val/test splits using IdTargetData
     class_weights, id_train_loader, id_val_loader, id_test_loader = get_train_val_test_loader(
         dataset=id_target_dataset,
         classification=True if args.task == 'classification' else False,
-        collate_fn=collate_pool,
+        collate_fn=active_collate_fn,
         batch_size=args.batch_size,
         train_ratio=args.train_ratio,
         num_workers=args.workers,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
-        pin_memory=args.cuda,
+        pin_memory=False,
         train_size=args.train_size,
         val_size=args.val_size,
         test_size=args.test_size,
@@ -180,7 +205,10 @@ def main():
             lmax=args.lmax,
             batch_size=args.batch_size,
             drop_last=args.drop_last,
-            save_to_disk=True
+            save_to_disk=True,
+            model_type=args.model_type,
+            data_format=data_format,
+            atoms_dict=shared_atoms_dict,
         )
         # Clear the memory after saving
         struct_dataset.clear_cache()
@@ -199,14 +227,18 @@ def main():
         lmax=args.lmax,
         batch_size=1,
         drop_last=False,
-        save_to_disk=False
+        save_to_disk=False,
+        model_type=args.model_type,
+        data_format=data_format,
+        atoms_dict=shared_atoms_dict,
     )
-    
+
     # Get feature dimensions from the first structure
     structures, _, _ = temp_struct_dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
-    nbr_fea_len = structures[1].shape[-1]
-    
+    if args.model_type == 'cgcnn':
+        nbr_fea_len = structures[1].shape[-1]
+
     # Clear temporary dataset
     temp_struct_dataset = None
 
@@ -222,22 +254,40 @@ def main():
         else:
             sample_size = 1000 + int(0.1 * (len(id_target_dataset) - 1000))
             sample_indices = sample(range(len(id_target_dataset)), sample_size)
-        
+
         # Use id_target_dataset directly
         sample_data_list = [id_target_dataset[i] for i in sample_indices]
         sample_target = torch.tensor([target for _, target in sample_data_list], dtype=torch.float)
         normalizer = Normalizer(sample_target)
 
     # build model
-    model = CrystalGraphConvNet(
-        orig_atom_fea_len=orig_atom_fea_len,
-        nbr_fea_len=nbr_fea_len,
-        atom_fea_len=args.atom_fea_len,
-        h_fea_len=args.h_fea_len,
-        n_conv=args.n_conv,
-        n_h=args.n_h,
-        classification=True if args.task == 'classification' else False
-    )
+    # Note: e3nn Gate uses float64 during init, incompatible with MPS default device.
+    # Build on CPU first, then move to device.
+    if args.model_type == 'e3nn':
+        prev_device = torch.get_default_device()
+        torch.set_default_device('cpu')
+        model = EOSNetV2(
+            orig_atom_fea_len=orig_atom_fea_len,
+            irreps_hidden=args.irreps_hidden,
+            max_ell=args.max_ell,
+            n_conv=args.n_conv,
+            num_radial_basis=args.num_radial_basis,
+            radial_cutoff=args.radius,
+            h_fea_len=args.h_fea_len,
+            n_h=args.n_h,
+            classification=True if args.task == 'classification' else False
+        )
+        torch.set_default_device(prev_device)
+    else:
+        model = CrystalGraphConvNet(
+            orig_atom_fea_len=orig_atom_fea_len,
+            nbr_fea_len=nbr_fea_len,
+            atom_fea_len=args.atom_fea_len,
+            h_fea_len=args.h_fea_len,
+            n_conv=args.n_conv,
+            n_h=args.n_h,
+            classification=True if args.task == 'classification' else False
+        )
 
     if args.cuda:
         device = torch.device("cuda")
@@ -310,12 +360,41 @@ def main():
     # main_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - args.warmup_epochs, eta_min=0.01*args.lr)
     # main_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=20, threshold=0.01, threshold_mode='abs')
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[args.warmup_epochs])
+
+    # Create persistent StructData instances ONCE (caches survive across epochs)
+    struct_data_common_args = dict(
+        root_dir=args.root_dir,
+        max_num_nbr=args.max_num_nbr,
+        radius=args.radius,
+        dmin=args.dmin,
+        step=args.step,
+        var=args.var,
+        nx=args.nx,
+        lmax=args.lmax,
+        batch_size=args.batch_size,
+        drop_last=args.drop_last,
+        save_to_disk=False,
+        model_type=args.model_type,
+        data_format=data_format,
+        atoms_dict=shared_atoms_dict,
+    )
+    train_struct_dataset = StructData(
+        id_prop_data=[(sid, target) for sid, target in id_train_loader.dataset.id_prop_data],
+        **struct_data_common_args,
+    )
+    val_struct_dataset = StructData(
+        id_prop_data=[(sid, target) for sid, target in id_val_loader.dataset.id_prop_data],
+        **struct_data_common_args,
+    )
+
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
-        train(id_train_loader, model, criterion, optimizer, epoch, normalizer)
-        
+        train(id_train_loader, model, criterion, optimizer, epoch, normalizer,
+              struct_dataset=train_struct_dataset)
+
         # evaluate on validation set
-        val_loss, mae_error = validate(id_val_loader, model, criterion, normalizer, test=False)
+        val_loss, mae_error = validate(id_val_loader, model, criterion, normalizer, test=False,
+                                       struct_dataset=val_struct_dataset)
         
         if mae_error != mae_error:
             print('Exit due to NaN')
@@ -358,8 +437,15 @@ def main():
         train_results_file = 'train_results.csv'
         test_results_file = 'test_results.csv'
     
+    # Create test struct dataset (reuses common args)
+    test_struct_dataset = StructData(
+        id_prop_data=[(sid, target) for sid, target in id_test_loader.dataset.id_prop_data],
+        **struct_data_common_args,
+    )
+
     if args.save_to_disk:
-        validate(id_train_loader, model, criterion, normalizer, test=True, filename=train_results_file)
+        validate(id_train_loader, model, criterion, normalizer, test=True, filename=train_results_file,
+                 struct_dataset=train_struct_dataset)
     else:
         test_size = len(id_test_loader.dataset)
         subset_indices = torch.randperm(len(id_train_loader.dataset))[:test_size]
@@ -367,22 +453,24 @@ def main():
         subset_train_loader = torch.utils.data.DataLoader(
             subset_train_dataset,
             batch_size=args.batch_size,
-            num_workers=args.workers,
+            num_workers=0,
             shuffle=False,
             drop_last=False,
-            persistent_workers=args.workers > 0,
-            collate_fn=collate_pool,
-            pin_memory=args.cuda
+            collate_fn=active_collate_fn,
+            pin_memory=False
         )
-        
-        # Evaluate on subset of training data
-        validate(subset_train_loader, model, criterion, normalizer, test=True, filename=train_results_file)
+
+        # Evaluate on subset of training data (reuse train cache)
+        validate(subset_train_loader, model, criterion, normalizer, test=True, filename=train_results_file,
+                 struct_dataset=train_struct_dataset)
 
     # Save test set predictions
-    validate(id_test_loader, model, criterion, normalizer, test=True, filename=test_results_file)
+    validate(id_test_loader, model, criterion, normalizer, test=True, filename=test_results_file,
+             struct_dataset=test_struct_dataset)
 
 
-def train(id_loader, model, criterion, optimizer, epoch, normalizer):
+def train(id_loader, model, criterion, optimizer, epoch, normalizer, struct_dataset=None):
+    _local_dataset = struct_dataset is None
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -395,22 +483,32 @@ def train(id_loader, model, criterion, optimizer, epoch, normalizer):
         fscores = AverageMeter()
         auc_scores = AverageMeter()
 
-    # Create StructData instance with training data
-    train_data = [(sid, target) for sid, target in id_loader.dataset.id_prop_data]
-    struct_dataset = StructData(
-        id_prop_data=train_data,
-        root_dir=args.root_dir,
-        max_num_nbr=args.max_num_nbr,
-        radius=args.radius,
-        dmin=args.dmin,
-        step=args.step,
-        var=args.var,
-        nx=args.nx,
-        lmax=args.lmax,
-        batch_size=args.batch_size,
-        drop_last=args.drop_last,
-        save_to_disk=False
-    )
+    # Select collate function
+    active_collate_fn = collate_pool_e3nn if args.model_type == 'e3nn' else collate_pool
+
+    # Create StructData if not provided (backward compat)
+    if struct_dataset is None:
+        ds = id_loader.dataset
+        if isinstance(ds, torch.utils.data.Subset):
+            train_data = [ds.dataset.id_prop_data[i] for i in ds.indices]
+        else:
+            train_data = [(sid, target) for sid, target in ds.id_prop_data]
+        struct_dataset = StructData(
+            id_prop_data=train_data,
+            root_dir=args.root_dir,
+            max_num_nbr=args.max_num_nbr,
+            radius=args.radius,
+            dmin=args.dmin,
+            step=args.step,
+            var=args.var,
+            nx=args.nx,
+            lmax=args.lmax,
+            batch_size=args.batch_size,
+            drop_last=args.drop_last,
+            save_to_disk=False,
+            data_format=getattr(args, 'data_format', 'auto'),
+            model_type=args.model_type
+        )
 
     # switch to train mode
     model.train()
@@ -421,30 +519,21 @@ def train(id_loader, model, criterion, optimizer, epoch, normalizer):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        # Get batch data
+        # Get batch data (O(1) lookup via _sid_to_idx)
         batch_data = []
         for sid, target in zip(struct_ids, targets):
-            idx = next(i for i, (s, _) in enumerate(struct_dataset.id_prop_data) if s == sid)
+            idx = struct_dataset._sid_to_idx[sid]
             batch_data.append(struct_dataset[idx])
-        
-        # Pass complete tuples to collate_pool
-        input, _, _ = collate_pool(batch_data)
-        
-        if args.cuda:
-            input_var = (Variable(input[0].to("cuda", non_blocking=True)),
-                        Variable(input[1].to("cuda", non_blocking=True)),
-                        input[2].to("cuda", non_blocking=True),
-                        [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
-        elif args.mps:
-            input_var = (Variable(input[0].to("mps", non_blocking=False)),
-                         Variable(input[1].to("mps", non_blocking=False)),
-                         input[2].to("mps", non_blocking=False),
-                         [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
-        else:
-            input_var = (Variable(input[0]),
-                         Variable(input[1]),
-                         input[2],
-                         input[3])
+
+        # Pass complete tuples to collate
+        input, _, _ = active_collate_fn(batch_data)
+
+        # Move to device
+        input_var = tuple(
+            [idx.to(device) for idx in item] if isinstance(item, list)
+            else item.to(device)
+            for item in input
+        )
 
         # Convert targets to tensor
         target = torch.tensor([float(t) for t in targets], dtype=torch.float)
@@ -521,11 +610,13 @@ def train(id_loader, model, criterion, optimizer, epoch, normalizer):
                     auc=auc_scores)
                 )
     
-    # Clean up
-    struct_dataset.clear_cache()
-    struct_dataset = None
+    # Clean up only if we created the dataset locally
+    if _local_dataset:
+        struct_dataset.clear_cache()
+        struct_dataset = None
 
-def validate(id_loader, model, criterion, normalizer, test=False, filename=None):
+def validate(id_loader, model, criterion, normalizer, test=False, filename=None, struct_dataset=None):
+    _local_dataset = struct_dataset is None
     batch_time = AverageMeter()
     losses = AverageMeter()
     if args.task == 'regression':
@@ -541,22 +632,32 @@ def validate(id_loader, model, criterion, normalizer, test=False, filename=None)
         test_preds = []
         test_struct_ids = []
 
-    # Create StructData instance with validation/test data
-    val_data = [(sid, target) for sid, target in id_loader.dataset.id_prop_data]
-    struct_dataset = StructData(
-        id_prop_data=val_data,
-        root_dir=args.root_dir,
-        max_num_nbr=args.max_num_nbr,
-        radius=args.radius,
-        dmin=args.dmin,
-        step=args.step,
-        var=args.var,
-        nx=args.nx,
-        lmax=args.lmax,
-        batch_size=args.batch_size,
-        drop_last=args.drop_last,
-        save_to_disk=False
-    )
+    # Select collate function
+    active_collate_fn = collate_pool_e3nn if args.model_type == 'e3nn' else collate_pool
+
+    # Create StructData if not provided (backward compat)
+    if struct_dataset is None:
+        ds = id_loader.dataset
+        if isinstance(ds, torch.utils.data.Subset):
+            val_data = [ds.dataset.id_prop_data[i] for i in ds.indices]
+        else:
+            val_data = [(sid, target) for sid, target in ds.id_prop_data]
+        struct_dataset = StructData(
+            id_prop_data=val_data,
+            root_dir=args.root_dir,
+            max_num_nbr=args.max_num_nbr,
+            radius=args.radius,
+            dmin=args.dmin,
+            step=args.step,
+            var=args.var,
+            nx=args.nx,
+            lmax=args.lmax,
+            batch_size=args.batch_size,
+            drop_last=args.drop_last,
+            save_to_disk=False,
+            model_type=args.model_type,
+            data_format=getattr(args, 'data_format', 'auto'),
+        )
 
     # switch to evaluate mode
     model.eval()
@@ -564,35 +665,21 @@ def validate(id_loader, model, criterion, normalizer, test=False, filename=None)
     end = time.time()
 
     for i, (targets, struct_ids) in enumerate(id_loader):
-        # Get batch data
+        # Get batch data (O(1) lookup via _sid_to_idx)
         batch_data = []
         for sid, target in zip(struct_ids, targets):
-            idx = next(i for i, (s, _) in enumerate(struct_dataset.id_prop_data) if s == sid)
+            idx = struct_dataset._sid_to_idx[sid]
             batch_data.append(struct_dataset[idx])
-        
-        # Pass complete tuples to collate_pool
-        input, _, _ = collate_pool(batch_data)
-        
-        if args.cuda:
-            with torch.no_grad():
-                input_var = (Variable(input[0].to("cuda", non_blocking=True)),
-                             Variable(input[1].to("cuda", non_blocking=True)),
-                             input[2].to("cuda", non_blocking=True),
-                             [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
-                target = target.to("cuda", non_blocking=True)
-        elif args.mps:
-            with torch.no_grad():
-                input_var = (Variable(input[0].to("mps", non_blocking=False)),
-                             Variable(input[1].to("mps", non_blocking=False)),
-                             input[2].to("mps", non_blocking=False),
-                             [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
-                target = target.to("mps", non_blocking=False)
-        else:
-            with torch.no_grad():
-                input_var = (Variable(input[0]),
-                             Variable(input[1]),
-                             input[2],
-                             input[3])
+
+        # Pass complete tuples to collate
+        input, _, _ = active_collate_fn(batch_data)
+
+        with torch.no_grad():
+            input_var = tuple(
+                [idx.to(device) for idx in item] if isinstance(item, list)
+                else item.to(device)
+                for item in input
+            )
 
         # Convert targets to tensor
         target = torch.tensor([float(t) for t in targets], dtype=torch.float)
@@ -670,9 +757,10 @@ def validate(id_loader, model, criterion, normalizer, test=False, filename=None)
                     accu=accuracies, prec=precisions, recall=recalls,
                     f1=fscores, auc=auc_scores))
     
-    # Clean up
-    struct_dataset.clear_cache()
-    struct_dataset = None
+    # Clean up only if we created the dataset locally
+    if _local_dataset:
+        struct_dataset.clear_cache()
+        struct_dataset = None
 
     if test and filename:
         star_label = '**'
