@@ -4,339 +4,224 @@
   <img src="https://raw.githubusercontent.com/Rutgers-ZRG/EosNet/master/EOSnet_TOC.png" width="65%" alt="EOSNet TOC">
 </p>
 
-**Note**: This EOSNet package is inherited from the [CGCNN](https://github.com/txie-93/cgcnn) framework, and there are some major changes.
+EOSNet uses atomic-centered Gaussian Overlap Matrix (GOM) fingerprints as node features in a graph neural network to predict material properties from crystal structures.
 
-## Change log
+**Key idea**: GOM eigenvalues encode orbital overlap information — a physics-motivated representation that captures chemical bonding character beyond simple distance-based descriptors.
 
-- Using atomic-centered Gaussian Overlap Matrix (GOM) Fingerprint vectors as atomic features
-- Switch reading pymatgen structures from CIF to POSCAR
-- Add `drop_last` option in `get_train_val_test_loader`
-- Take data imbalance into account for classification job
-- Clip `lfp` (Long FP) and `sfp` (Contracted FP) length for arbitrary crystal structures
-- Add MPS support to accelerate training on MacOS, for details see [PyTorch MPS Backend](https://pytorch.org/docs/stable/notes/mps.html) and [Apple Metal acceleration](https://developer.apple.com/metal/pytorch/) \
-  **Note**: For classification jobs you may need to modify [line 227 in WeightedRandomSampler](https://github.com/pytorch/pytorch/blob/main/torch/utils/data/sampler.py#L227) to `weights_tensor = torch.as_tensor(weights, dtype=torch.float32 if weights.device.type == "mps" else torch.float64)` when using MPS backend. To maximize the efficiency of training while using MPS backend, you may want to use only single core (`--workers 0`) of the CPU to load the dataset.
-- Add `save_to_disk` option, `disable_mps` option and FP related arg options
-- Introduce `IdTargetData` class to do efficient sampling on the dataset
-- Update `collate_pool` to handle both `IdTargetData` and `StructData` type dataset
-- Complete refrom the `StructData` with batch loading and processing, and add `dataset.clear_cache()` to release memory
-- Move instancing of `StructData` to `tain()` and `validate()` seprately instead of in `main()`
-- Use `IdTargetData` for `get_train_val_test_loader()`, and get `struct_data` from `StructData` by batches
-- Saving the `processed_data` to multiple `npz` files under `saved_npz_files` directory instead of one big file
-- Save both `train_results.csv` and `test_results.csv` at the end of training
-- Switching from [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library to [C implementation](https://github.com/Rutgers-ZRG/libfp) to improve speed. \
-  (Optional) Modify the `setup.py` in `fplib` if you use `conda` to install LAPACK:
-  ```python
-  lapack_dir=["$CONDA_PREFIX/lib"]
-  lapack_lib=['openblas']
-  extra_link_args = ["-Wl,-rpath,$CONDA_PREFIX/lib"]
-  .
-  .
-  .
-  include_dirs = [source_dir, "$CONDA_PREFIX/include"]
-  ```
-  if you use `brew` to install LAPACK:
-  ```python
-  lapack_dir=["$HOMEBREW_PREFIX/opt/openblas/lib"]
-  lapack_lib=['openblas']
-  extra_link_args = ['-framework', 'Accelerate',
-                     "-Wl,-rpath,$HOMEBREW_PREFIX/opt/openblas/lib"]
-  .
-  .
-  .
-  include_dirs = [source_dir, "$HOMEBREW_PREFIX/opt/openblas/include"]
-  ```
-  you probably need to modify your `~/.bashrc` file for compiler to find the correct LAPACK library:
-  ```bash
-  # If you use `conda install conda-forge::lapack`
-  export DYLD_LIBRARY_PATH="$CONDA_PREFIX/lib:$DYLD_LIBRARY_PATH"
-  # If you use `brew install openblas`
-  export CFLAGS="-I/opt/homebrew/opt/openblas/include $CFLAGS"
-  export LDFLAGS="-L/opt/homebrew/opt/openblas/lib $LDFLAGS"
-  ```
-  Then install the Fingerprint library (Snapshot of `fplib-3.1.2` ):
-  ```bash
-  conda create -n fplibenv python=3.10 pip ; conda activate fplibenv
-  python3 -m pip install -U pip setuptools wheel
-  git clone https://github.com/Tack-Tau/fplib.git
-  cd fplib ; git checkout fplib_3.1.2
-  python3 -m pip install .
-  ```
-  For the remaining EOSNet dependecies follow the original instruction. \
-  **Note**: ~~Currently only `lmax=0` is supported in the C version~~
+## Models
 
-This package is based on the [Crystal Graph Convolutional Neural Networks]((https://link.aps.org/doi/10.1103/PhysRevLett.120.145301)) that takes an arbitary crystal structure to predict material properties. 
+EOSNet provides two backbone architectures:
 
-The package provides two major functions:
+| Model | Backbone | Description |
+|-------|----------|-------------|
+| **EOSNet v1** (CGCNN) | Crystal graph convolution | GOM fingerprints + CGCNN message passing |
+| **EOSNet v2** (e3nn) | Equivariant tensor products | GOM fingerprints + e3nn spherical harmonics |
 
-- Train a EOSNet model with a customized dataset.
-- Predict material properties of new crystals with a pre-trained EOSNet model.
+Select with `--model-type cgcnn` (default) or `--model-type e3nn`.
 
-##  Dependencies
+## Installation
 
-This package requires:
+### Prerequisites
 
-- [fplib](https://github.com/Tack-Tau/fplib)
-- [PyTorch](http://pytorch.org)
-- [scikit-learn](http://scikit-learn.org/stable/)
-- [pymatgen](http://pymatgen.org)
-- [ASE](https://wiki.fysik.dtu.dk/ase/)
-- ~~[Numba](https://numba.pydata.org/)~~ (Numba is no longer needed since we are switching from `fplib3` to `fplib_c`)
+- Python 3.10+
+- [libfp](https://github.com/Rutgers-ZRG/libfp) (C implementation of GOM fingerprints)
+- [PyTorch](https://pytorch.org) >= 2.0
+- [e3nn](https://github.com/e3nn/e3nn) (required for v2 model only)
 
-If you are new to Python, please [conda](https://conda.io/docs/index.html) to manage Python packages and environments.
+### Setup
 
 ```bash
-conda activate fplibenv
-python3 -m pip install numpy>=1.21.4 scipy>=1.8.0 ase==3.22.1
-python3 -m pip install scikit-learn torch==2.2.2 torchvision==0.17.2 pymatgen==2024.3.1
-```
-The above environment has been tested stable for both M-chip MacOS and CentOS clusters
+conda create -n eosnet python=3.10 pip
+conda activate eosnet
 
-## Check your strcuture files before use EOSNet
+# Install libfp (GOM fingerprint library)
+git clone https://github.com/Tack-Tau/fplib.git
+cd fplib && git checkout fplib_3.1.2
+pip install .
+cd ..
 
-To catch the erroneous POSCAR file you can use the following `check_fp.py` in the `root_dir`:
-```python
-
-#!/usr/bin/env python3
-
-import os
-import sys
-import numpy as np
-from functools import reduce
-import fplib
-from ase.io import read as ase_read
-
-def get_ixyz(lat, cutoff):
-    lat = np.ascontiguousarray(lat)
-    lat2 = np.dot(lat, np.transpose(lat))
-    vec = np.linalg.eigvals(lat2)
-    ixyz = int(np.sqrt(1.0/max(vec))*cutoff) + 1
-    ixyz = np.int32(ixyz)
-    return ixyz
-
-def check_n_sphere(rxyz, lat, cutoff, natx):
-    
-    ixyzf = get_ixyz(lat, cutoff)
-    ixyz = int(ixyzf) + 1
-    nat = len(rxyz)
-    cutoff2 = cutoff**2
-
-    for iat in range(nat):
-        xi, yi, zi = rxyz[iat]
-        n_sphere = 0
-        for jat in range(nat):
-            for ix in range(-ixyz, ixyz+1):
-                for iy in range(-ixyz, ixyz+1):
-                    for iz in range(-ixyz, ixyz+1):
-                        xj = rxyz[jat][0] + ix*lat[0][0] + iy*lat[1][0] + iz*lat[2][0]
-                        yj = rxyz[jat][1] + ix*lat[0][1] + iy*lat[1][1] + iz*lat[2][1]
-                        zj = rxyz[jat][2] + ix*lat[0][2] + iy*lat[1][2] + iz*lat[2][2]
-                        d2 = (xj-xi)**2 + (yj-yi)**2 + (zj-zi)**2
-                        if d2 <= cutoff2:
-                            n_sphere += 1
-                            if n_sphere > natx:
-                                raise ValueError()
-
-
-def read_types(cell_file):
-    buff = []
-    with open(cell_file) as f:
-        for line in f:
-            buff.append(line.split())
-    try:
-        typt = np.array(buff[5], int)
-    except:
-        del(buff[5])
-        typt = np.array(buff[5], int)
-    types = []
-    for i in range(len(typt)):
-        types += [i+1]*typt[i]
-    types = np.array(types, int)
-    return types
-
-if __name__ == "__main__":
-    current_dir = './'
-    for filename in os.listdir(current_dir):
-        f = os.path.join(current_dir, filename)
-        if os.path.isfile(f) and os.path.splitext(f)[-1].lower() == '.vasp':
-            atoms = ase_read(f)
-            lat = atoms.cell[:]
-            rxyz = atoms.get_positions()
-            chem_nums = list(atoms.numbers)
-            znucl_list = reduce(lambda re, x: re+[x] if x not in re else re, chem_nums, [])
-            typ = len(znucl_list)
-            znucl = np.array(znucl_list, int)
-            types = read_types(f)
-            cell = (lat, rxyz, types, znucl)
-
-            natx = int(256)
-            lmax = int(0)
-            cutoff = np.float64(int(np.sqrt(8.0))*3) # Shorter cutoff for GOM
-            
-            try:
-                check_n_sphere(rxyz, lat, cutoff, natx)
-            except ValueError:
-                print(str(filename) + " is glitchy !")
-            
-            if len(rxyz) != len(types) or len(set(types)) != len(znucl):
-                print(str(filename) + " is glitchy !")
-            else:
-                fp = fplib.get_lfp(cell, cutoff=cutoff, natx=natx, log=False) # Long Fingerprint
-                # fp = fplib.get_sfp(cell, cutoff=cutoff, natx=natx, log=False)   # Contracted Fingerprint         
+# Install dependencies
+pip install numpy scipy ase scikit-learn pymatgen
+pip install torch torchvision
+pip install e3nn  # for v2 model
 ```
 
-## Usage
+<details>
+<summary>libfp LAPACK troubleshooting (macOS)</summary>
 
-### Define a customized dataset 
+If using conda LAPACK:
+```bash
+export DYLD_LIBRARY_PATH="$CONDA_PREFIX/lib:$DYLD_LIBRARY_PATH"
+```
 
-To input crystal structures to EOSNet, you will need to define a customized dataset. Note that this is required for both training and predicting. 
+If using Homebrew OpenBLAS:
+```bash
+export CFLAGS="-I/opt/homebrew/opt/openblas/include $CFLAGS"
+export LDFLAGS="-L/opt/homebrew/opt/openblas/lib $LDFLAGS"
+```
 
-Before defining a customized dataset, you will need:
+You may also need to edit `fplib/setup.py` to point to your LAPACK installation.
+</details>
 
-- [POSCAR](https://www.vasp.at/wiki/index.php/POSCAR) files recording the structure of the crystals that you are interested in
-- The target properties for each crystal (not needed for predicting, but you need to put some random numbers in `id_prop.csv`)
+## Data Format
 
-You can create a customized dataset by creating a directory `root_dir` with the following files: 
+EOSNet supports two input formats:
 
-1. `id_prop.csv`: a [CSV](https://en.wikipedia.org/wiki/Comma-separated_values) file with two columns. The first column recodes a unique `ID` for each crystal, and the second column recodes the value of target property. If you want to predict material properties with `predict.py`, you can put any number in the second column. (The second column is still needed.)
+### POSCAR format (default)
 
-2. `ID.vasp` a [POSCAR](https://www.vasp.at/wiki/index.php/POSCAR) file that recodes the crystal structure, where `ID` is the unique `ID` for the crystal.
-
-The structure of the `root_dir` should be:
+Create a directory with:
 
 ```
-root_dir
-├── id_prop.csv
-├── atom_init.json
-├── id0.vasp
+root_dir/
+├── id_prop.csv      # ID, target_value (one per line)
+├── id0.vasp         # POSCAR files
 ├── id1.vasp
-├── ...
+└── ...
 ```
 
-### Train a GNN model
+### Extended XYZ format
 
-Before training a new GNN model, you will need to:
+```
+root_dir/
+├── id_prop.csv      # ID, target_value
+└── structures.xyz   # All structures in extended XYZ
+```
 
-- Define a customized dataset at `root_dir` to store the structure-property relations of interest.
+Use `convert_to_extxyz.py` to convert POSCAR directories to extended XYZ.
 
-Then, in directory `EOSNet`, you can train a GNN model for your customized dataset by:
+## Training
 
 ```bash
-python3 train.py root_dir
+# Train with CGCNN backbone (v1)
+python train.py root_dir
+
+# Train with e3nn backbone (v2)
+python train.py root_dir --model-type e3nn
+
+# Full example with recommended settings
+python train.py root_dir \
+    --model-type e3nn \
+    --task regression \
+    --epochs 500 \
+    --batch-size 64 \
+    --optim Adam \
+    --lr 1e-3 \
+    --warmup-epochs 20 \
+    --lr-milestones 100 200 400 \
+    --train-ratio 0.8 \
+    --val-ratio 0.1 \
+    --test-ratio 0.1 \
+    --n-conv 3 \
+    --n-h 1 \
+    | tee train_log.txt
 ```
 
-For detailed info of setting tags you can run
+### Key options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model-type` | `cgcnn` | Model backbone: `cgcnn` or `e3nn` |
+| `--task` | `regression` | `regression` or `classification` |
+| `--epochs` | `200` | Number of training epochs |
+| `--batch-size` | `64` | Mini-batch size |
+| `--optim` | `SGD` | Optimizer: `SGD` or `Adam` |
+| `--lr` | `0.01` | Initial learning rate |
+| `--n-conv` | `3` | Number of convolution layers |
+| `--nx` | `256` | Max neighbors for GOM fingerprint |
+| `--lmax` | `0` | `0` for s-orbitals only, `1` for s+p |
+| `--radius` | `8.0` | Neighbor cutoff radius (Å) |
+| `--save_to_disk` | `False` | Pre-process and cache data to disk |
+| `--fine-tune` | — | Path to pre-trained model for fine-tuning |
+| `--resume` | — | Path to checkpoint for resuming training |
+| `--data-format` | `auto` | Input format: `auto`, `extxyz`, or `vasp` |
+
+e3nn-specific options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--irreps-hidden` | `32x0e+16x1o+8x2e` | Hidden irreducible representations |
+| `--max-ell` | `2` | Max spherical harmonic order |
+| `--num-radial-basis` | `16` | Number of radial basis functions |
+
+Run `python train.py -h` for all options.
+
+### Output files
+
+- `model_best.pth.tar` — Best model (by validation MAE or AUC)
+- `checkpoint.pth.tar` — Latest checkpoint
+- `train_results.csv` / `test_results.csv` — Predictions (ID, target, predicted)
+
+## Prediction
 
 ```bash
-python3 train.py -h
+python predict.py model_best.pth.tar --test root_dir
 ```
 
-```bash
-python3 train.py root_dir --save_to_disk true --disable-mps --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 | tee EOSNet_log.txt
-```
+## How to Cite
 
-To resume from a previous `checkpoint`
+If you use EOSNet, please cite:
 
-```bash
-python3 train.py root_dir --save_to_disk false --disable-mps --resume ./checkpoint.pth.tar --task regression --workers 7 --epochs 500 --batch-size 64 --optim 'Adam' --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 --n-conv 3 --n-h 1 --lr 1e-3 --warmup-epochs 20 --lr-milestones 100 200 400 --weight-decay 0 >> EOSNet_log.txt
-```
-
-After training, you will get three files in `EOSNet` directory.
-
-- `model_best.pth.tar`: stores the GNN model with the best validation accuracy.
-- `checkpoint.pth.tar`: stores the GNN model at the last epoch.
-- `test_results.csv`: stores the `ID`, target value, and predicted value for each crystal in test set.
-
-### Predict material properties with a pre-trained GNN model
-
-In directory `EOSNet`, you can predict the properties of the crystals in `root_dir`:
-
-```bash
-python predict.py pre-trained.pth.tar --save_to_disk false --test root_dir
-```
-
-**Note**: you need to put some random numbers in `id_prop.csv` and the `struct_id`s are the structures you want to predict.
-
-## How to cite
-
-Please cite the our newly published work if you use EOSNet in your research:
-
-```
+```bibtex
 @article{taoEOSnetEmbeddedOverlap2025,
-  author = {Tao, Shuo and Zhu, Li},
-  title = {EOSnet: Embedded Overlap Structures for Graph Neural Networks in Predicting Material Properties},
+  title   = {EOSnet: Embedded Overlap Structures for Graph Neural Networks
+             in Predicting Material Properties},
+  author  = {Tao, Shuo and Zhu, Li},
   journal = {J. Phys. Chem. Lett.},
-  volume = {16},
-  number = {XXX},
-  pages = {717-724},
-  year = {2025},
-  doi = {10.1021/acs.jpclett.4c03179},
-  URL = { https://doi.org/10.1021/acs.jpclett.4c03179},
-  eprint = { https://doi.org/10.1021/acs.jpclett.4c03179}
+  volume  = {16},
+  pages   = {717--724},
+  year    = {2025},
+  doi     = {10.1021/acs.jpclett.4c03179}
 }
 ```
 
-For CGCNN framework, please cite:
-```
-@article{PhysRevLett.120.145301,
-  title = {Crystal Graph Convolutional Neural Networks for an Accurate and Interpretable Prediction of Material Properties},
-  author = {Xie, Tian and Grossman, Jeffrey C.},
-  journal = {Phys. Rev. Lett.},
-  volume = {120},
-  issue = {14},
-  pages = {145301},
-  numpages = {6},
-  year = {2018},
-  month = {Apr},
-  publisher = {American Physical Society},
-  doi = {10.1103/PhysRevLett.120.145301},
-  url = {https://link.aps.org/doi/10.1103/PhysRevLett.120.145301}
-}
-```
+GOM fingerprint methodology:
 
-If you use [Python3 implementation](https://github.com/Tack-Tau/fplib3/) of the Fingerprint Library, please cite:
-```@article{taoAcceleratingStructuralOptimization2024,
-  title = {Accelerating Structural Optimization through Fingerprinting Space Integration on the Potential Energy Surface},
-  author = {Tao, Shuo and Shao, Xuecheng and Zhu, Li},
-  year = {2024},
-  month = mar,
-  journal = {J. Phys. Chem. Lett.},
-  volume = {15},
-  number = {11},
-  pages = {3185--3190},
-  doi = {10.1021/acs.jpclett.4c00275},
-  url = {https://pubs.acs.org/doi/10.1021/acs.jpclett.4c00275}
-}
-```
-
-If you use [C implementation](https://github.com/zhuligs/fplib) of the Fingerprint Library, please cite:
-```
-@article{zhuFingerprintBasedMetric2016,
-  title = {A Fingerprint Based Metric for Measuring Similarities of Crystalline Structures},
-  author = {Zhu, Li and Amsler, Maximilian and Fuhrer, Tobias and Schaefer, Bastian and Faraji, Somayeh and Rostami, Samare and Ghasemi, S. Alireza and Sadeghi, Ali and Grauzinyte, Migle and Wolverton, Chris and Goedecker, Stefan},
-  year = {2016},
-  month = jan,
-  journal = {The Journal of Chemical Physics},
-  volume = {144},
-  number = {3},
-  pages = {034203},
-  doi = {10.1063/1.4940026},
-  url = {https://doi.org/10.1063/1.4940026}
-}
-```
-
-For GOM Fingerprint methodology, please cite:
-```
+```bibtex
 @article{sadeghiMetricsMeasuringDistances2013,
-  title = {Metrics for Measuring Distances in Configuration Spaces},
-  author = {Sadeghi, Ali and Ghasemi, S. Alireza and Schaefer, Bastian and Mohr, Stephan and Lill, Markus A. and Goedecker, Stefan},
-  year = {2013},
-  month = nov,
-  journal = {The Journal of Chemical Physics},
-  volume = {139},
-  number = {18},
-  pages = {184118},
-  doi = {10.1063/1.4828704},
-  url = {https://pubs.aip.org/aip/jcp/article/317391}
+  title   = {Metrics for Measuring Distances in Configuration Spaces},
+  author  = {Sadeghi, Ali and Ghasemi, S. Alireza and Schaefer, Bastian
+             and Mohr, Stephan and Lill, Markus A. and Goedecker, Stefan},
+  journal = {J. Chem. Phys.},
+  volume  = {139},
+  pages   = {184118},
+  year    = {2013},
+  doi     = {10.1063/1.4828704}
 }
 ```
 
+Fingerprint library:
+
+```bibtex
+@article{zhuFingerprintBasedMetric2016,
+  title   = {A Fingerprint Based Metric for Measuring Similarities
+             of Crystalline Structures},
+  author  = {Zhu, Li and Amsler, Maximilian and Fuhrer, Tobias and Schaefer, Bastian
+             and Faraji, Somayeh and Rostami, Samare and Ghasemi, S. Alireza
+             and Sadeghi, Ali and Grauzinyte, Migle and Wolverton, Chris
+             and Goedecker, Stefan},
+  journal = {J. Chem. Phys.},
+  volume  = {144},
+  pages   = {034203},
+  year    = {2016},
+  doi     = {10.1063/1.4940026}
+}
+```
+
+CGCNN framework:
+
+```bibtex
+@article{PhysRevLett.120.145301,
+  title     = {Crystal Graph Convolutional Neural Networks for an Accurate
+               and Interpretable Prediction of Material Properties},
+  author    = {Xie, Tian and Grossman, Jeffrey C.},
+  journal   = {Phys. Rev. Lett.},
+  volume    = {120},
+  pages     = {145301},
+  year      = {2018},
+  doi       = {10.1103/PhysRevLett.120.145301}
+}
+```
+
+## License
+
+This project is built on the [CGCNN](https://github.com/txie-93/cgcnn) framework by Tian Xie.
