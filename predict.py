@@ -15,8 +15,8 @@ from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
 from fpcnn.data import StructData
-from fpcnn.data import collate_pool
-from fpcnn.model import CrystalGraphConvNet
+from fpcnn.data import collate_pool, collate_pool_e3nn
+from fpcnn.model import CrystalGraphConvNet, EOSNetV2
 
 parser = argparse.ArgumentParser(description='Crystal gated neural networks')
 parser.add_argument('modelpath', help='path to the trained model.')
@@ -114,6 +114,10 @@ def main():
                              persistent_workers=args.workers > 0,
                              pin_memory=args.cuda)
 
+    # Detect model type from checkpoint
+    pred_model_type = getattr(model_args, 'model_type', 'cgcnn')
+    active_collate_fn = collate_pool_e3nn if pred_model_type == 'e3nn' else collate_pool
+
     # Create StructData instance with prediction data
     pred_data = [(struct_id, target) for struct_id, target in id_target_data]
     dataset = StructData(
@@ -128,23 +132,37 @@ def main():
         lmax=model_args.lmax,
         batch_size=args.batch_size,
         drop_last=False,
-        save_to_disk=False
+        save_to_disk=False,
+        model_type=pred_model_type
     )
 
     # build model
     structures, _, _ = dataset[0]
     orig_atom_fea_len = structures[0].shape[-1]
-    nbr_fea_len = structures[1].shape[-1]
 
-    model = CrystalGraphConvNet(
-        orig_atom_fea_len=orig_atom_fea_len,
-        nbr_fea_len=nbr_fea_len,
-        atom_fea_len=model_args.atom_fea_len,
-        h_fea_len=model_args.h_fea_len,
-        n_conv=model_args.n_conv,
-        n_h=model_args.n_h,
-        classification=True if model_args.task == 'classification' else False
-    )
+    if pred_model_type == 'e3nn':
+        model = EOSNetV2(
+            orig_atom_fea_len=orig_atom_fea_len,
+            irreps_hidden=getattr(model_args, 'irreps_hidden', '32x0e+16x1o+8x2e'),
+            max_ell=getattr(model_args, 'max_ell', 2),
+            n_conv=model_args.n_conv,
+            num_radial_basis=getattr(model_args, 'num_radial_basis', 16),
+            radial_cutoff=model_args.radius,
+            h_fea_len=model_args.h_fea_len,
+            n_h=model_args.n_h,
+            classification=True if model_args.task == 'classification' else False
+        )
+    else:
+        nbr_fea_len = structures[1].shape[-1]
+        model = CrystalGraphConvNet(
+            orig_atom_fea_len=orig_atom_fea_len,
+            nbr_fea_len=nbr_fea_len,
+            atom_fea_len=model_args.atom_fea_len,
+            h_fea_len=model_args.h_fea_len,
+            n_conv=model_args.n_conv,
+            n_h=model_args.n_h,
+            classification=True if model_args.task == 'classification' else False
+        )
     
     # Initialize normalizer
     if model_args.task == 'classification':
@@ -183,6 +201,9 @@ def main():
 
 
 def validate(val_loader, model, normalizer, test=False):
+    pred_model_type = getattr(model_args, 'model_type', 'cgcnn')
+    active_collate_fn = collate_pool_e3nn if pred_model_type == 'e3nn' else collate_pool
+
     # Create StructData instance here before using it
     dataset = StructData(
         id_prop_data=[(struct_id, target) for struct_id, target in val_loader.dataset],
@@ -196,13 +217,22 @@ def validate(val_loader, model, normalizer, test=False):
         lmax=model_args.lmax,
         batch_size=args.batch_size,
         drop_last=False,
-        save_to_disk=args.save_to_disk
+        save_to_disk=args.save_to_disk,
+        model_type=pred_model_type
     )
 
     # Always initialize these variables
     test_preds = []
     test_struct_ids = []
-    
+
+    # Determine device
+    if args.cuda:
+        device = torch.device("cuda")
+    elif args.mps:
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
     # switch to evaluate mode
     model.eval()
 
@@ -212,26 +242,16 @@ def validate(val_loader, model, normalizer, test=False):
         for sid, target in zip(struct_ids, targets):
             idx = next(i for i, (s, _) in enumerate(dataset.id_prop_data) if s == sid)
             batch_data.append(dataset[idx])
-        
-        # Pass complete tuples to collate_pool
-        input, _, _ = collate_pool(batch_data)
+
+        # Pass complete tuples to collate
+        input, _, _ = active_collate_fn(batch_data)
 
         with torch.no_grad():
-            if args.cuda:
-                input_var = (Variable(input[0].to("cuda", non_blocking=True)),
-                            Variable(input[1].to("cuda", non_blocking=True)),
-                            input[2].to("cuda", non_blocking=True),
-                            [crys_idx.to("cuda", non_blocking=True) for crys_idx in input[3]])
-            elif args.mps:
-                input_var = (Variable(input[0].to("mps", non_blocking=False)),
-                            Variable(input[1].to("mps", non_blocking=False)),
-                            input[2].to("mps", non_blocking=False),
-                            [crys_idx.to("mps", non_blocking=False) for crys_idx in input[3]])
-            else:
-                input_var = (Variable(input[0]),
-                            Variable(input[1]),
-                            input[2],
-                            input[3])
+            input_var = tuple(
+                [idx.to(device) for idx in item] if isinstance(item, list)
+                else item.to(device)
+                for item in input
+            )
 
         # compute output
         output = model(*input_var)
