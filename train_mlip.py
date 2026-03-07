@@ -77,15 +77,30 @@ def load_dataset(data_path):
     print(f"Loaded {len(frames)} structures")
 
     # Validate: need energy and forces
+    # ASE 3.27+ puts extxyz energy/forces into SinglePointCalculator
     valid = []
     for i, atoms in enumerate(frames):
-        energy = atoms.info.get('energy', atoms.info.get('REF_energy'))
-        forces = atoms.arrays.get('forces', atoms.arrays.get('REF_forces'))
+        energy = (atoms.info.get('energy')
+                  or atoms.info.get('REF_energy')
+                  or atoms.info.get('total_energy'))
+        forces = (atoms.arrays.get('forces')
+                  or atoms.arrays.get('REF_forces'))
+        stress = (atoms.info.get('stress')
+                  or atoms.info.get('REF_stress'))
+
+        # Fall back to SinglePointCalculator results (ASE 3.27+)
+        if atoms.calc is not None:
+            r = getattr(atoms.calc, 'results', {})
+            if energy is None:
+                energy = r.get('energy')
+            if forces is None:
+                forces = r.get('forces')
+            if stress is None:
+                stress = r.get('stress')
+
         if energy is not None and forces is not None:
             atoms.info['_energy'] = float(energy)
             atoms.arrays['_forces'] = np.array(forces, dtype=np.float64)
-            # Stress (optional)
-            stress = atoms.info.get('stress', atoms.info.get('REF_stress'))
             if stress is not None:
                 atoms.info['_stress'] = np.array(stress, dtype=np.float64)
             valid.append(atoms)
