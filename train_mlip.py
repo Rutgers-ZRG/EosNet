@@ -17,6 +17,7 @@ from ase.io import read as ase_read
 from ase.neighborlist import neighbor_list
 
 from eosnet.mlip import EOSNetMLIP
+from eosnet.fp import get_lfp_from_ase_neighbors
 
 
 def parse_args():
@@ -108,21 +109,13 @@ def load_dataset(data_path):
     return valid
 
 
-def build_graph(atoms, cutoff):
-    """Build edge graph from ASE Atoms using neighbor list.
+def build_graph(atoms, cutoff, gom_cutoff=6.0, natx=64, use_gom=True):
+    """Build edge graph from ASE Atoms, with precomputed GOM fingerprints.
 
-    Returns:
-        atomic_numbers: (nat,) long tensor
-        positions: (nat, 3) float tensor
-        cell: (3, 3) float tensor
-        edge_index: (2, E) long tensor
-        edge_vec: (E, 3) float tensor
-        energy: scalar tensor (eV)
-        forces: (nat, 3) tensor (eV/Å)
-        stress: (6,) tensor or None (eV/ų, Voigt)
-        nat: int
+    GOM eigenvalues are computed once here and cached — NOT recomputed
+    every forward pass.
     """
-    i_idx, j_idx, D_vec = neighbor_list('ijD', atoms, cutoff)
+    i_idx, j_idx, D_vec, S_vec = neighbor_list('ijDS', atoms, cutoff)
 
     nat = len(atoms)
     atomic_numbers = torch.tensor(atoms.numbers, dtype=torch.long)
@@ -132,7 +125,8 @@ def build_graph(atoms, cutoff):
         torch.tensor(i_idx, dtype=torch.long),
         torch.tensor(j_idx, dtype=torch.long)
     ])
-    edge_vec = torch.tensor(D_vec, dtype=torch.float32)
+    # Store shift vectors so edge_vec can be recomputed from positions
+    edge_shifts = torch.tensor(S_vec, dtype=torch.float32)  # (E, 3) lattice shift indices
 
     energy = torch.tensor(atoms.info['_energy'], dtype=torch.float32)
     forces = torch.tensor(atoms.arrays['_forces'], dtype=torch.float32)
@@ -141,16 +135,28 @@ def build_graph(atoms, cutoff):
     if '_stress' in atoms.info:
         stress = torch.tensor(atoms.info['_stress'], dtype=torch.float32)
 
+    # Precompute GOM fingerprints (cached, not recomputed per epoch)
+    gom_fp = None
+    if use_gom:
+        gom_i, gom_j, gom_D = neighbor_list('ijD', atoms, gom_cutoff)
+        gom_fp = get_lfp_from_ase_neighbors(
+            atoms.get_positions(), atoms.numbers,
+            gom_i, gom_j, gom_D,
+            cutoff=gom_cutoff, natx=natx,
+            device='cpu', dtype=torch.float64
+        ).float()  # (nat, natx)
+
     return {
         'atomic_numbers': atomic_numbers,
         'positions': positions,
         'cell': cell,
         'edge_index': edge_index,
-        'edge_vec': edge_vec,
+        'edge_shifts': edge_shifts,
         'energy': energy,
         'forces': forces,
         'stress': stress,
         'nat': nat,
+        'gom_fp': gom_fp,
     }
 
 
@@ -163,7 +169,12 @@ def train_step(model, batch, optimizer, energy_w, force_w, stress_w, device):
     cell = batch['cell'].to(device)
     atomic_numbers = batch['atomic_numbers'].to(device)
     edge_index = batch['edge_index'].to(device)
-    edge_vec = batch['edge_vec'].to(device)
+    edge_shifts = batch['edge_shifts'].to(device)
+    gom_fp = batch['gom_fp'].to(device) if batch['gom_fp'] is not None else None
+
+    # Recompute edge_vec from positions so autograd can compute forces
+    edge_src, edge_dst = edge_index
+    edge_vec = positions[edge_dst] - positions[edge_src] + edge_shifts @ cell
 
     target_energy = batch['energy'].to(device)
     target_forces = batch['forces'].to(device)
@@ -175,7 +186,8 @@ def train_step(model, batch, optimizer, energy_w, force_w, stress_w, device):
         atomic_numbers, positions, cell,
         edge_index, edge_vec,
         compute_forces=True,
-        compute_stress=compute_stress
+        compute_stress=compute_stress,
+        gom_fp=gom_fp,
     )
 
     # Energy loss (per atom)
@@ -206,7 +218,6 @@ def train_step(model, batch, optimizer, energy_w, force_w, stress_w, device):
     }
 
 
-@torch.no_grad()
 def validate(model, val_data, device):
     """Validate on a dataset."""
     model.eval()
@@ -218,15 +229,21 @@ def validate(model, val_data, device):
         cell = batch['cell'].to(device)
         atomic_numbers = batch['atomic_numbers'].to(device)
         edge_index = batch['edge_index'].to(device)
-        edge_vec = batch['edge_vec'].to(device)
+        edge_shifts = batch['edge_shifts'].to(device)
+        gom_fp = batch['gom_fp'].to(device) if batch['gom_fp'] is not None else None
         nat = batch['nat']
+
+        # Recompute edge_vec from positions for autograd
+        edge_src, edge_dst = edge_index
+        edge_vec = positions[edge_dst] - positions[edge_src] + edge_shifts @ cell
 
         with torch.enable_grad():
             output = model(
                 atomic_numbers, positions, cell,
                 edge_index, edge_vec,
                 compute_forces=True,
-                compute_stress=False
+                compute_stress=False,
+                gom_fp=gom_fp,
             )
 
         target_energy = batch['energy'].to(device)
@@ -273,9 +290,14 @@ def main():
 
     # Pre-build graphs
     print("Building graphs...")
-    train_data = [build_graph(frames[i], args.radial_cutoff) for i in train_idx]
-    val_data = [build_graph(frames[i], args.radial_cutoff) for i in val_idx]
-    test_data = [build_graph(frames[i], args.radial_cutoff) for i in test_idx]
+    use_gom = not args.no_gom
+    def _build(i):
+        return build_graph(frames[i], args.radial_cutoff,
+                           gom_cutoff=args.gom_cutoff, natx=args.natx,
+                           use_gom=use_gom)
+    train_data = [_build(i) for i in train_idx]
+    val_data = [_build(i) for i in val_idx]
+    test_data = [_build(i) for i in test_idx]
 
     # Build model on CPU first (e3nn Gate float64 issue)
     prev_device = torch.get_default_device() if hasattr(torch, 'get_default_device') else None

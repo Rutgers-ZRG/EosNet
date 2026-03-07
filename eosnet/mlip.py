@@ -233,11 +233,10 @@ class EOSNetMLIP(nn.Module):
         self._scalar_indices = torch.LongTensor(self._scalar_indices)
         num_output_scalars = len(self._scalar_indices)
 
-        # GOM features
+        # GOM features: just a learned projection from precomputed eigenvalues
+        self.natx = natx
         if use_gom:
-            self.gom = GOMFeatures(
-                gom_cutoff=gom_cutoff, natx=natx,
-                n_gom_features=n_gom_features)
+            self.gom_proj = nn.Linear(natx, n_gom_features)
             readout_in = num_output_scalars + n_gom_features
         else:
             readout_in = num_output_scalars
@@ -257,7 +256,8 @@ class EOSNetMLIP(nn.Module):
 
     def forward(self, atomic_numbers, positions, cell,
                 edge_index, edge_vec,
-                compute_forces=True, compute_stress=False):
+                compute_forces=True, compute_stress=False,
+                gom_fp=None):
         """Forward pass.
 
         Args:
@@ -268,6 +268,8 @@ class EOSNetMLIP(nn.Module):
             edge_vec: (E, 3) edge displacement vectors
             compute_forces: if True, compute forces via autograd
             compute_stress: if True, compute stress via autograd
+            gom_fp: (nat, natx) precomputed GOM eigenvalues (optional).
+                     If None and use_gom=True, computed on-the-fly (slow).
 
         Returns:
             dict with 'energy', 'forces' (optional), 'stress' (optional)
@@ -315,9 +317,13 @@ class EOSNetMLIP(nn.Module):
         scalar_idx = self._scalar_indices.to(device)
         scalar_fea = node_fea[:, scalar_idx]
 
-        # GOM features
+        # GOM features (precomputed eigenvalues → learned projection)
         if self.use_gom:
-            gom_fea = self.gom(positions, cell, atomic_numbers)
+            if gom_fp is None:
+                # On-the-fly fallback for ASE calculator / inference
+                gom_fp = self._compute_gom_onthefly(
+                    positions, cell, atomic_numbers)
+            gom_fea = self.gom_proj(gom_fp)
             combined = torch.cat([scalar_fea, gom_fea], dim=-1)
         else:
             combined = scalar_fea
@@ -356,3 +362,21 @@ class EOSNetMLIP(nn.Module):
             result['stress'] = stress
 
         return result
+
+    def _compute_gom_onthefly(self, positions, cell, atomic_numbers):
+        """Compute GOM fingerprints on-the-fly (for inference/calculator)."""
+        import numpy as np
+        from .fp import get_lfp
+
+        lat = cell.detach().cpu().numpy()
+        rxyz = positions.detach().cpu().numpy()
+        znucl_list = []
+        types = []
+        for z in atomic_numbers.cpu().tolist():
+            if z not in znucl_list:
+                znucl_list.append(z)
+            types.append(znucl_list.index(z) + 1)
+        cell_tuple = (lat, rxyz, np.array(types), np.array(znucl_list))
+        fp_raw = get_lfp(cell_tuple, cutoff=6.0, natx=self.natx,
+                         device='cpu', dtype=torch.float64).float()
+        return fp_raw.to(positions.device)
