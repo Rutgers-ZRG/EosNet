@@ -14,9 +14,9 @@ from sklearn import metrics
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
-from fpcnn.data import StructData
-from fpcnn.data import collate_pool, collate_pool_e3nn
-from fpcnn.model import CrystalGraphConvNet, EOSNetV2
+from eosnet.data import StructData
+from eosnet.data import collate_pool, collate_pool_e3nn
+from eosnet.model import CrystalGraphConvNet, EOSNetV2
 
 parser = argparse.ArgumentParser(description='Crystal gated neural networks')
 parser.add_argument('modelpath', help='path to the trained model.')

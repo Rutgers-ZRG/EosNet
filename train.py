@@ -22,9 +22,9 @@ from torch.optim.lr_scheduler import StepLR, SequentialLR, LinearLR
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.multiprocessing import set_sharing_strategy, get_context
 
-from fpcnn.data import IdTargetData, StructData
-from fpcnn.data import collate_pool, collate_pool_e3nn, get_train_val_test_loader
-from fpcnn.model import CrystalGraphConvNet, EOSNetV2
+from eosnet.data import IdTargetData, StructData
+from eosnet.data import collate_pool, collate_pool_e3nn, get_train_val_test_loader
+from eosnet.model import CrystalGraphConvNet, EOSNetV2
 
 parser = argparse.ArgumentParser(description='EOSNet: Embedded Overlap Structures for Graph Neural Networks')
 # Explicitly add arguments for data options
@@ -164,7 +164,7 @@ def main():
 
     # Pre-load atoms for extxyz (shared across all StructData instances)
     if data_format == 'extxyz':
-        from fpcnn.data import _load_extxyz
+        from eosnet.data import _load_extxyz
         shared_atoms_dict = _load_extxyz(args.root_dir)
         print(f"Loaded {len(shared_atoms_dict)} structures from extxyz")
     else:
