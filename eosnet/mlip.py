@@ -10,108 +10,93 @@ from e3nn import o3
 from e3nn.nn import Gate
 
 from .model import RadialBasis, scatter_sum
-from .fp.gom import build_gom_s_batched, _eigvalsh_batched_adaptive
+from .fp.gom import build_gom_s_batched, build_gom_sp_batched, _eigvalsh_batched_adaptive
 from .fp.rcov import get_rcov
 from .fp.cutoff import cutoff_amplitude
 from .fp.neighbors import get_ixyz
 
 
-class GOMFeatures(nn.Module):
-    """Compute differentiable GOM fingerprint features for all atoms.
+def compute_gom_differentiable(positions, gom_nbr_idx, gom_nbr_shifts,
+                                gom_nbr_rcov, gom_n_sphere, gom_self_rcov,
+                                cells, batch_idx, gom_cutoff, natx,
+                                orbital='s'):
+    """Compute GOM eigenvalues differentiably from live positions.
 
-    Uses torch-fplib's batched GOM construction + eigendecomposition.
-    Output: per-atom GOM eigenvalue vector (l=0 scalars).
+    Neighbor topology is precomputed and fixed; positions are live tensors
+    with requires_grad=True so autograd flows through to forces.
+
+    Args:
+        positions: (N_total, 3) all atom positions (requires_grad)
+        gom_nbr_idx: (N_total, max_nbr) neighbor atom indices (global)
+        gom_nbr_shifts: (N_total, max_nbr, 3) lattice shift vectors (fractional)
+        gom_nbr_rcov: (N_total, max_nbr) covalent radii of neighbors
+        gom_n_sphere: (N_total,) actual neighbor count per atom (including self)
+        gom_self_rcov: (N_total,) covalent radii of center atoms
+        cells: (n_struct, 3, 3) lattice vectors
+        batch_idx: (N_total,) structure index per atom
+        gom_cutoff: cutoff radius
+        natx: fingerprint dimension
+
+    Returns:
+        (N_total, natx) eigenvalues, descending, differentiable w.r.t. positions
     """
+    N = positions.shape[0]
+    max_nbr = gom_nbr_idx.shape[1]
+    device = positions.device
 
-    def __init__(self, gom_cutoff=6.0, natx=64, n_gom_features=32):
-        super().__init__()
-        self.gom_cutoff = gom_cutoff
-        self.natx = natx
-        self.n_gom_features = n_gom_features
-        # Linear projection from raw eigenvalues to fixed-size feature
-        self.proj = nn.Linear(natx, n_gom_features)
+    # Self position: slot 0 in the neighbor sphere
+    # Neighbor positions: positions[nbr_idx] + shifts @ cell
+    nbr_pos_raw = positions[gom_nbr_idx]  # (N, max_nbr, 3) — differentiable!
 
-    def forward(self, positions, cell, atomic_numbers):
-        """Compute GOM features for all atoms in a structure.
+    # Cartesian shift: for each (i, j), shift_cart[i,j] = gom_nbr_shifts[i,j] @ cells[batch_idx[i]]
+    atom_cells = cells[batch_idx]  # (N, 3, 3)
+    shift_cart = torch.einsum('ijk,ikl->ijl', gom_nbr_shifts, atom_cells)
 
-        Args:
-            positions: (nat, 3) atomic positions, requires_grad=True
-            cell: (3, 3) lattice vectors
-            atomic_numbers: (nat,) integer atomic numbers
+    nbr_pos = nbr_pos_raw + shift_cart  # (N, max_nbr, 3)
 
-        Returns:
-            (nat, n_gom_features) GOM feature vectors
-        """
-        nat = positions.shape[0]
-        device = positions.device
-        dtype = positions.dtype
+    # Build rxyz_padded: slot 0 = self, slots 1..max_nbr = neighbors
+    # Already structured this way in precomputation
+    rxyz_padded = nbr_pos  # (N, max_nbr, 3)
 
-        # Get covalent radii
-        rcov_all = get_rcov(atomic_numbers, device=device, dtype=dtype)
+    # Compute squared distances for cutoff amplitude
+    center_pos = positions.unsqueeze(1)  # (N, 1, 3)
+    d_vec = rxyz_padded - center_pos
+    d2 = (d_vec ** 2).sum(-1)  # (N, max_nbr)
 
-        # Neighbor search (periodic images within GOM cutoff)
-        cutoff2 = self.gom_cutoff ** 2
-        ixyz = get_ixyz(cell, self.gom_cutoff)
+    # Cutoff amplitudes (differentiable)
+    amp_padded = cutoff_amplitude(d2, gom_cutoff)  # (N, max_nbr)
 
-        # Build shift vectors
-        arange = torch.arange(-ixyz, ixyz + 1, device=device, dtype=dtype)
-        grid = torch.stack(
-            torch.meshgrid(arange, arange, arange, indexing='ij'), dim=-1)
-        shifts = grid.reshape(-1, 3)
-        shift_vecs = shifts @ cell  # (n_shifts, 3)
+    # rcov_padded: slot 0 = self_rcov, rest from precomputed
+    rcov_padded = gom_nbr_rcov  # (N, max_nbr)
 
-        # All images: (n_shifts, nat, 3)
-        images = positions[None, :, :] + shift_vecs[:, None, :]
+    # Build GOMs and eigendecompose
+    if orbital == 'sp':
+        lseg = 4
+        goms = build_gom_sp_batched(rxyz_padded, rcov_padded, amp_padded, gom_n_sphere)
+    else:
+        lseg = 1
+        goms = build_gom_s_batched(rxyz_padded, rcov_padded, amp_padded, gom_n_sphere)
 
-        # Distances: (nat, n_shifts*nat)
-        d_vec = positions[:, None, None, :] - images[None, :, :, :]
-        d2 = (d_vec ** 2).sum(-1)  # (nat, n_shifts, nat)
-        n_shifts = shifts.shape[0]
-        d2_flat = d2.reshape(nat, n_shifts * nat)
-        images_flat = images.reshape(n_shifts * nat, 3)
-        rcov_flat = rcov_all.repeat(n_shifts)
+    eigvals = _eigvalsh_batched_adaptive(goms)  # ascending
+    eigvals = eigvals.flip(-1)  # descending
 
-        # Mask within cutoff
-        d2_masked = d2_flat.clone()
-        d2_masked[d2_flat > cutoff2] = float('inf')
+    fp_dim = natx * lseg
+    n_eig = eigvals.shape[1]
 
-        # Sort and take top natx neighbors
-        sorted_d2, sort_idx = d2_masked.sort(dim=1)
-        max_n = min(self.natx, (sorted_d2 < float('inf')).sum(dim=1).max().item())
-        sorted_d2 = sorted_d2[:, :max_n]
-        sort_idx = sort_idx[:, :max_n]
+    # Pad/trim to fp_dim
+    if n_eig >= fp_dim:
+        eigvals = eigvals[:, :fp_dim]
+    else:
+        pad = torch.zeros(N, fp_dim - n_eig, device=device, dtype=eigvals.dtype)
+        eigvals = torch.cat([eigvals, pad], dim=1)
 
-        # Gather positions and rcov
-        rxyz_padded = images_flat[sort_idx.reshape(-1)].reshape(nat, max_n, 3)
-        rcov_padded = rcov_flat[sort_idx.reshape(-1)].reshape(nat, max_n)
+    # Zero padding artifacts
+    keep_dim = gom_n_sphere.clamp(max=natx).unsqueeze(1) * lseg
+    cols = torch.arange(fp_dim, device=device).unsqueeze(0)
+    keep = cols < keep_dim
+    eigvals = eigvals * keep.to(eigvals.dtype)
 
-        # Cutoff amplitudes
-        amp_padded = cutoff_amplitude(sorted_d2, self.gom_cutoff)
-
-        # Count actual neighbors
-        n_sphere = (sorted_d2 < cutoff2 + 1e-6).sum(dim=1).clamp(max=self.natx)
-
-        # Build GOMs and eigendecompose (batched)
-        goms = build_gom_s_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere)
-        eigvals = _eigvalsh_batched_adaptive(goms)  # (nat, max_n), ascending
-        eigvals = eigvals.flip(-1)  # descending
-
-        # Pad/trim to natx
-        if max_n >= self.natx:
-            eigvals = eigvals[:, :self.natx]
-        else:
-            pad = torch.zeros(nat, self.natx - max_n,
-                              device=device, dtype=dtype)
-            eigvals = torch.cat([eigvals, pad], dim=1)
-
-        # Zero padding artifacts
-        cols = torch.arange(self.natx, device=device).unsqueeze(0)
-        keep = cols < n_sphere.clamp(max=self.natx).unsqueeze(1)
-        eigvals = eigvals * keep.to(dtype)
-
-        # Project to feature dimension
-        gom_fea = self.proj(eigvals.float())
-        return gom_fea
+    return eigvals
 
 
 class MLIPInteractionBlock(nn.Module):
@@ -186,13 +171,19 @@ class EOSNetMLIP(nn.Module):
                  gom_cutoff=6.0,
                  natx=64,
                  energy_hidden=128,
-                 use_gom=True):
+                 use_gom=True,
+                 gom_input_dim=None,
+                 orbital='s'):
         super().__init__()
 
         self.radial_cutoff = radial_cutoff
+        self.gom_cutoff = gom_cutoff
+        self.orbital = orbital
         self.use_gom = use_gom
         self.irreps_hidden = o3.Irreps(irreps_hidden)
         self.irreps_sh = o3.Irreps.spherical_harmonics(max_ell)
+        if gom_input_dim is None:
+            gom_input_dim = natx
 
         # Count scalar channels
         num_scalars = sum(mul for mul, ir in self.irreps_hidden if ir.l == 0)
@@ -233,11 +224,18 @@ class EOSNetMLIP(nn.Module):
         self._scalar_indices = torch.LongTensor(self._scalar_indices)
         num_output_scalars = len(self._scalar_indices)
 
-        # GOM features: just a learned projection from precomputed eigenvalues
+        # GOM features
         self.natx = natx
+        self.gom_input_dim = gom_input_dim
         if use_gom:
-            self.gom_proj = nn.Linear(natx, n_gom_features)
-            readout_in = num_output_scalars + n_gom_features
+            if n_gom_features > 0:
+                # Learned projection from eigenvalues
+                self.gom_proj = nn.Linear(gom_input_dim, n_gom_features)
+                readout_in = num_output_scalars + n_gom_features
+            else:
+                # Feed raw eigenvalues directly (no compression)
+                self.gom_proj = None
+                readout_in = num_output_scalars + gom_input_dim
         else:
             readout_in = num_output_scalars
 
@@ -257,22 +255,27 @@ class EOSNetMLIP(nn.Module):
     def forward(self, atomic_numbers, positions, cell,
                 edge_index, edge_vec,
                 compute_forces=True, compute_stress=False,
-                gom_fp=None):
-        """Forward pass.
+                gom_fp=None, batch_idx=None, n_structures=None,
+                gom_data=None, cells=None):
+        """Forward pass supporting both single structure and batched input.
 
         Args:
-            atomic_numbers: (nat,) integer atomic numbers
-            positions: (nat, 3) Cartesian positions
-            cell: (3, 3) lattice vectors
+            atomic_numbers: (N,) integer atomic numbers (N = total atoms in batch)
+            positions: (N, 3) Cartesian positions
+            cell: (3, 3) lattice vectors (single structure only)
             edge_index: (2, E) [src, dst] edge indices
             edge_vec: (E, 3) edge displacement vectors
             compute_forces: if True, compute forces via autograd
             compute_stress: if True, compute stress via autograd
-            gom_fp: (nat, natx) precomputed GOM eigenvalues (optional).
-                     If None and use_gom=True, computed on-the-fly (slow).
+            gom_fp: (N, dim) precomputed GOM eigenvalues (static, no grad)
+            batch_idx: (N,) structure index for each atom (for batched training)
+            n_structures: number of structures in batch
+            gom_data: dict with precomputed GOM neighbor topology for
+                      differentiable computation (if provided, overrides gom_fp)
+            cells: (n_struct, 3, 3) lattice vectors (for batched + differentiable GOM)
 
         Returns:
-            dict with 'energy', 'forces' (optional), 'stress' (optional)
+            dict with 'energy', 'forces', 'energy_per_struct' (if batched)
         """
         num_nodes = positions.shape[0]
         device = positions.device
@@ -281,19 +284,16 @@ class EOSNetMLIP(nn.Module):
         if compute_forces and not positions.requires_grad:
             positions.requires_grad_(True)
 
-        # Strain for stress computation
+        # Strain for stress computation (single structure only)
         if compute_stress:
-            # Apply symmetric strain to cell and positions
             strain = torch.zeros(3, 3, device=device, dtype=positions.dtype,
                                  requires_grad=True)
             eye = torch.eye(3, device=device, dtype=positions.dtype)
             deformation = eye + strain
             positions = positions @ deformation.T
             cell = cell @ deformation.T
-            # Recompute edge vectors under strain
             edge_src, edge_dst = edge_index
             edge_vec = positions[edge_dst] - positions[edge_src]
-            # TODO: apply PBC shift vectors under strain if needed
 
         edge_src, edge_dst = edge_index
 
@@ -317,13 +317,27 @@ class EOSNetMLIP(nn.Module):
         scalar_idx = self._scalar_indices.to(device)
         scalar_fea = node_fea[:, scalar_idx]
 
-        # GOM features (precomputed eigenvalues → learned projection)
+        # GOM features
         if self.use_gom:
-            if gom_fp is None:
-                # On-the-fly fallback for ASE calculator / inference
+            if gom_data is not None:
+                # Differentiable GOM: compute from live positions
+                gom_eigvals = compute_gom_differentiable(
+                    positions,
+                    gom_data['nbr_idx'], gom_data['nbr_shifts'],
+                    gom_data['nbr_rcov'], gom_data['n_sphere'],
+                    gom_data['self_rcov'],
+                    cells, batch_idx,
+                    self.gom_cutoff,
+                    self.natx,
+                    orbital=self.orbital)
+                gom_fp = gom_eigvals.float()
+            elif gom_fp is None:
                 gom_fp = self._compute_gom_onthefly(
                     positions, cell, atomic_numbers)
-            gom_fea = self.gom_proj(gom_fp)
+            if self.gom_proj is not None:
+                gom_fea = self.gom_proj(gom_fp)
+            else:
+                gom_fea = gom_fp
             combined = torch.cat([scalar_fea, gom_fea], dim=-1)
         else:
             combined = scalar_fea
@@ -332,10 +346,17 @@ class EOSNetMLIP(nn.Module):
         atom_energy = self.energy_readout(combined).squeeze(-1)
         atom_energy = atom_energy + self.energy_shift(atomic_numbers).squeeze(-1)
 
-        # Total energy
-        energy = atom_energy.sum()
+        # Total energy (sum over all atoms or per-structure)
+        if batch_idx is not None:
+            energy_per_struct = scatter_sum(
+                atom_energy.unsqueeze(-1), batch_idx, n_structures).squeeze(-1)
+            energy = energy_per_struct.sum()
+        else:
+            energy = atom_energy.sum()
+            energy_per_struct = energy.unsqueeze(0)
 
-        result = {'energy': energy, 'atom_energy': atom_energy}
+        result = {'energy': energy, 'atom_energy': atom_energy,
+                  'energy_per_struct': energy_per_struct}
 
         # Forces via autograd
         if compute_forces:
@@ -346,7 +367,7 @@ class EOSNetMLIP(nn.Module):
             )[0]
             result['forces'] = forces
 
-        # Stress via autograd
+        # Stress via autograd (single structure only)
         if compute_stress:
             volume = torch.abs(torch.det(cell))
             stress_voigt = torch.autograd.grad(
@@ -354,7 +375,6 @@ class EOSNetMLIP(nn.Module):
                 create_graph=self.training,
                 retain_graph=True
             )[0]
-            # Convert to Voigt notation: xx, yy, zz, yz, xz, xy
             stress = torch.stack([
                 stress_voigt[0, 0], stress_voigt[1, 1], stress_voigt[2, 2],
                 stress_voigt[1, 2], stress_voigt[0, 2], stress_voigt[0, 1]

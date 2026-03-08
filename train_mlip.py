@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument('data_path', type=str,
                         help='Path to extxyz file or directory containing data.extxyz')
     parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--batch-size', type=int, default=4)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight-decay', type=float, default=1e-5)
     parser.add_argument('--energy-weight', type=float, default=1.0)
@@ -40,12 +40,21 @@ def parse_args():
     parser.add_argument('--n-gom-features', type=int, default=32)
     parser.add_argument('--no-gom', action='store_true',
                         help='Disable GOM features (pure e3nn baseline)')
+    parser.add_argument('--orbital', type=str, default='s',
+                        choices=['s', 'sp'],
+                        help='GOM orbital type: s (default) or sp (s+p)')
     parser.add_argument('--irreps-hidden', type=str,
                         default='32x0e+16x1o+8x2e')
     parser.add_argument('--max-ell', type=int, default=2)
     parser.add_argument('--n-conv', type=int, default=3)
     parser.add_argument('--num-radial-basis', type=int, default=16)
     parser.add_argument('--energy-hidden', type=int, default=128)
+    parser.add_argument('--train-file', type=str, default='',
+                        help='Separate train extxyz file')
+    parser.add_argument('--val-file', type=str, default='',
+                        help='Separate val extxyz file')
+    parser.add_argument('--test-file', type=str, default='',
+                        help='Separate test extxyz file')
     parser.add_argument('--train-ratio', type=float, default=0.8)
     parser.add_argument('--val-ratio', type=float, default=0.1)
     parser.add_argument('--patience', type=int, default=50,
@@ -109,12 +118,15 @@ def load_dataset(data_path):
     return valid
 
 
-def build_graph(atoms, cutoff, gom_cutoff=6.0, natx=64, use_gom=True):
+def build_graph(atoms, cutoff, gom_cutoff=6.0, natx=64, use_gom=True,
+                orbital='s'):
     """Build edge graph from ASE Atoms, with precomputed GOM fingerprints.
 
     GOM eigenvalues are computed once here and cached — NOT recomputed
     every forward pass.
     """
+    from eosnet.fp import get_lfp
+
     i_idx, j_idx, D_vec, S_vec = neighbor_list('ijDS', atoms, cutoff)
 
     nat = len(atoms)
@@ -135,16 +147,56 @@ def build_graph(atoms, cutoff, gom_cutoff=6.0, natx=64, use_gom=True):
     if '_stress' in atoms.info:
         stress = torch.tensor(atoms.info['_stress'], dtype=torch.float32)
 
-    # Precompute GOM fingerprints (cached, not recomputed per epoch)
-    gom_fp = None
+    # Precompute GOM neighbor topology (indices + shifts, reused every epoch)
+    # Actual GOM eigenvalues computed differentiably in forward pass
+    gom_data = None
     if use_gom:
-        gom_i, gom_j, gom_D = neighbor_list('ijD', atoms, gom_cutoff)
-        gom_fp = get_lfp_from_ase_neighbors(
-            atoms.get_positions(), atoms.numbers,
-            gom_i, gom_j, gom_D,
-            cutoff=gom_cutoff, natx=natx,
-            device='cpu', dtype=torch.float64
-        ).float()  # (nat, natx)
+        from eosnet.fp.rcov import get_rcov
+        gom_i, gom_j, gom_D, gom_S = neighbor_list('ijDS', atoms, gom_cutoff)
+
+        rcov_all = get_rcov(torch.tensor(atoms.numbers),
+                            dtype=torch.float32).numpy()
+
+        # For each atom, collect neighbors sorted by distance
+        # Slot 0 = self, slots 1..max_nbr = neighbors
+        nbr_counts = np.bincount(gom_i, minlength=nat)
+        max_sphere = int(nbr_counts.max()) + 1 if len(gom_i) > 0 else 1
+        max_n = min(max_sphere, natx)
+
+        nbr_idx = np.zeros((nat, max_n), dtype=np.int64)
+        nbr_shifts = np.zeros((nat, max_n, 3), dtype=np.float32)
+        nbr_rcov = np.zeros((nat, max_n), dtype=np.float32)
+        n_sphere = np.zeros(nat, dtype=np.int64)
+
+        for iat in range(nat):
+            # Self entry at slot 0
+            nbr_idx[iat, 0] = iat
+            nbr_shifts[iat, 0] = 0.0
+            nbr_rcov[iat, 0] = rcov_all[iat]
+
+            mask = (gom_i == iat)
+            n_nbr = mask.sum()
+            if n_nbr == 0:
+                n_sphere[iat] = 1
+                continue
+
+            local_d2 = (gom_D[mask] ** 2).sum(axis=1)
+            order = np.argsort(local_d2)
+            n_keep = min(n_nbr, max_n - 1)
+            order = order[:n_keep]
+
+            nbr_idx[iat, 1:1+n_keep] = gom_j[mask][order]
+            nbr_shifts[iat, 1:1+n_keep] = gom_S[mask][order]
+            nbr_rcov[iat, 1:1+n_keep] = rcov_all[gom_j[mask][order]]
+            n_sphere[iat] = 1 + n_keep
+
+        gom_data = {
+            'nbr_idx': torch.tensor(nbr_idx, dtype=torch.long),
+            'nbr_shifts': torch.tensor(nbr_shifts, dtype=torch.float32),
+            'nbr_rcov': torch.tensor(nbr_rcov, dtype=torch.float32),
+            'n_sphere': torch.tensor(n_sphere, dtype=torch.long),
+            'self_rcov': torch.tensor(rcov_all, dtype=torch.float32),
+        }
 
     return {
         'atomic_numbers': atomic_numbers,
@@ -156,103 +208,209 @@ def build_graph(atoms, cutoff, gom_cutoff=6.0, natx=64, use_gom=True):
         'forces': forces,
         'stress': stress,
         'nat': nat,
-        'gom_fp': gom_fp,
+        'gom_data': gom_data,
     }
 
 
-def train_step(model, batch, optimizer, energy_w, force_w, stress_w, device):
-    """Train on a single structure (no batching across structures)."""
+def collate_batch(graphs, device):
+    """Collate multiple structure graphs into a single batched graph.
+
+    Concatenates atoms and edges with offset indices, enabling GPU-efficient
+    mini-batch training without padding.
+    """
+    all_positions = []
+    all_atomic_numbers = []
+    all_edge_src = []
+    all_edge_dst = []
+    all_edge_shifts = []
+    all_cells = []
+    all_energies = []
+    all_forces = []
+    all_batch_idx = []
+    all_nats = []
+
+    # GOM neighbor topology (for differentiable GOM)
+    all_gom_nbr_idx = []
+    all_gom_nbr_shifts = []
+    all_gom_nbr_rcov = []
+    all_gom_n_sphere = []
+    all_gom_self_rcov = []
+    has_gom_data = False
+
+    atom_offset = 0
+    for i, g in enumerate(graphs):
+        nat = g['nat']
+        all_positions.append(g['positions'])
+        all_atomic_numbers.append(g['atomic_numbers'])
+        all_forces.append(g['forces'])
+        all_energies.append(g['energy'])
+        all_nats.append(nat)
+        all_batch_idx.append(torch.full((nat,), i, dtype=torch.long))
+
+        # Offset edge indices
+        src, dst = g['edge_index']
+        all_edge_src.append(src + atom_offset)
+        all_edge_dst.append(dst + atom_offset)
+        all_edge_shifts.append(g['edge_shifts'])
+        all_cells.append(g['cell'])
+
+        # GOM neighbor data — offset nbr_idx by atom_offset
+        if g['gom_data'] is not None:
+            has_gom_data = True
+            gd = g['gom_data']
+            all_gom_nbr_idx.append(gd['nbr_idx'] + atom_offset)
+            all_gom_nbr_shifts.append(gd['nbr_shifts'])
+            all_gom_nbr_rcov.append(gd['nbr_rcov'])
+            all_gom_n_sphere.append(gd['n_sphere'])
+            all_gom_self_rcov.append(gd['self_rcov'])
+
+        atom_offset += nat
+
+    positions = torch.cat(all_positions).to(device).requires_grad_(True)
+    atomic_numbers = torch.cat(all_atomic_numbers).to(device)
+    edge_index = torch.stack([
+        torch.cat(all_edge_src), torch.cat(all_edge_dst)
+    ]).to(device)
+    forces = torch.cat(all_forces).to(device)
+    energies = torch.stack(all_energies).to(device)
+    batch_idx = torch.cat(all_batch_idx).to(device)
+    nats = torch.tensor(all_nats, dtype=torch.float32, device=device)
+
+    # Recompute edge_vec from positions for autograd
+    edge_src, edge_dst = edge_index
+    edge_batch = batch_idx[edge_src]
+
+    cells = torch.stack(all_cells).to(device)
+    edge_shifts = torch.cat(all_edge_shifts).to(device)
+
+    edge_cell = cells[edge_batch]
+    shift_cart = torch.einsum('ei,eij->ej', edge_shifts, edge_cell)
+    edge_vec = positions[edge_dst] - positions[edge_src] + shift_cart
+
+    # Collate GOM neighbor topology
+    gom_data = None
+    if has_gom_data:
+        # Pad nbr arrays to same max_nbr across batch
+        max_nbrs = [g.shape[1] for g in all_gom_nbr_idx]
+        max_nbr = max(max_nbrs)
+
+        def pad_2d(tensors, max_col, fill=0):
+            result = []
+            for t in tensors:
+                if t.shape[1] < max_col:
+                    pad = torch.full((t.shape[0], max_col - t.shape[1]),
+                                     fill, dtype=t.dtype)
+                    result.append(torch.cat([t, pad], dim=1))
+                else:
+                    result.append(t)
+            return torch.cat(result)
+
+        def pad_3d(tensors, max_col):
+            result = []
+            for t in tensors:
+                if t.shape[1] < max_col:
+                    pad = torch.zeros(t.shape[0], max_col - t.shape[1], 3,
+                                      dtype=t.dtype)
+                    result.append(torch.cat([t, pad], dim=1))
+                else:
+                    result.append(t)
+            return torch.cat(result)
+
+        gom_data = {
+            'nbr_idx': pad_2d(all_gom_nbr_idx, max_nbr).to(device),
+            'nbr_shifts': pad_3d(all_gom_nbr_shifts, max_nbr).to(device),
+            'nbr_rcov': pad_2d(all_gom_nbr_rcov, max_nbr).to(device),
+            'n_sphere': torch.cat(all_gom_n_sphere).to(device),
+            'self_rcov': torch.cat(all_gom_self_rcov).to(device),
+        }
+
+    return {
+        'positions': positions,
+        'atomic_numbers': atomic_numbers,
+        'edge_index': edge_index,
+        'edge_vec': edge_vec,
+        'forces': forces,
+        'energies': energies,
+        'batch_idx': batch_idx,
+        'nats': nats,
+        'gom_data': gom_data,
+        'cells': cells,
+        'n_structures': len(graphs),
+    }
+
+
+def train_step(model, graphs, optimizer, energy_w, force_w, stress_w, device):
+    """Train on a mini-batch of structures."""
     model.train()
     optimizer.zero_grad()
 
-    positions = batch['positions'].to(device).requires_grad_(True)
-    cell = batch['cell'].to(device)
-    atomic_numbers = batch['atomic_numbers'].to(device)
-    edge_index = batch['edge_index'].to(device)
-    edge_shifts = batch['edge_shifts'].to(device)
-    gom_fp = batch['gom_fp'].to(device) if batch['gom_fp'] is not None else None
-
-    # Recompute edge_vec from positions so autograd can compute forces
-    edge_src, edge_dst = edge_index
-    edge_vec = positions[edge_dst] - positions[edge_src] + edge_shifts @ cell
-
-    target_energy = batch['energy'].to(device)
-    target_forces = batch['forces'].to(device)
-    nat = batch['nat']
-
-    compute_stress = stress_w > 0 and batch['stress'] is not None
+    batch = collate_batch(graphs, device)
 
     output = model(
-        atomic_numbers, positions, cell,
-        edge_index, edge_vec,
+        batch['atomic_numbers'], batch['positions'], None,
+        batch['edge_index'], batch['edge_vec'],
         compute_forces=True,
-        compute_stress=compute_stress,
-        gom_fp=gom_fp,
+        compute_stress=False,
+        batch_idx=batch['batch_idx'],
+        n_structures=batch['n_structures'],
+        gom_data=batch['gom_data'],
+        cells=batch['cells'],
     )
 
-    # Energy loss (per atom)
-    energy_loss = ((output['energy'] / nat - target_energy / nat) ** 2)
+    # Energy loss: per-atom MSE averaged over structures
+    pred_energy_per_atom = output['energy_per_struct'] / batch['nats']
+    target_energy_per_atom = batch['energies'] / batch['nats']
+    energy_loss = ((pred_energy_per_atom - target_energy_per_atom) ** 2).mean()
 
-    # Force loss (per component)
-    force_loss = ((output['forces'] - target_forces) ** 2).mean()
+    # Force loss: per-component MSE
+    force_loss = ((output['forces'] - batch['forces']) ** 2).mean()
 
     loss = energy_w * energy_loss + force_w * force_loss
-
-    # Stress loss
-    if compute_stress and 'stress' in output:
-        target_stress = batch['stress'].to(device)
-        stress_loss = ((output['stress'] - target_stress) ** 2).mean()
-        loss = loss + stress_w * stress_loss
 
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
     optimizer.step()
 
+    with torch.no_grad():
+        energy_mae = (pred_energy_per_atom - target_energy_per_atom).abs().mean().item()
+        force_mae = (output['forces'] - batch['forces']).abs().mean().item()
+
     return {
         'loss': loss.item(),
-        'energy_loss': energy_loss.item(),
-        'force_loss': force_loss.item(),
-        'energy_mae': abs(output['energy'].item() / nat
-                          - target_energy.item() / nat),
-        'force_mae': (output['forces'] - target_forces).abs().mean().item(),
+        'energy_mae': energy_mae,
+        'force_mae': force_mae,
     }
 
 
-def validate(model, val_data, device):
-    """Validate on a dataset."""
+def validate(model, val_data, device, batch_size=32):
+    """Validate on a dataset using mini-batches."""
     model.eval()
     energy_maes = []
     force_maes = []
 
-    for batch in val_data:
-        positions = batch['positions'].to(device).requires_grad_(True)
-        cell = batch['cell'].to(device)
-        atomic_numbers = batch['atomic_numbers'].to(device)
-        edge_index = batch['edge_index'].to(device)
-        edge_shifts = batch['edge_shifts'].to(device)
-        gom_fp = batch['gom_fp'].to(device) if batch['gom_fp'] is not None else None
-        nat = batch['nat']
-
-        # Recompute edge_vec from positions for autograd
-        edge_src, edge_dst = edge_index
-        edge_vec = positions[edge_dst] - positions[edge_src] + edge_shifts @ cell
+    for start in range(0, len(val_data), batch_size):
+        graphs = val_data[start:start + batch_size]
+        batch = collate_batch(graphs, device)
 
         with torch.enable_grad():
             output = model(
-                atomic_numbers, positions, cell,
-                edge_index, edge_vec,
+                batch['atomic_numbers'], batch['positions'], None,
+                batch['edge_index'], batch['edge_vec'],
                 compute_forces=True,
                 compute_stress=False,
-                gom_fp=gom_fp,
+                batch_idx=batch['batch_idx'],
+                n_structures=batch['n_structures'],
+                gom_data=batch['gom_data'],
+                cells=batch['cells'],
             )
 
-        target_energy = batch['energy'].to(device)
-        target_forces = batch['forces'].to(device)
-
-        energy_maes.append(
-            abs(output['energy'].item() / nat - target_energy.item() / nat))
-        force_maes.append(
-            (output['forces'] - target_forces).abs().mean().item())
+        with torch.no_grad():
+            pred_epa = output['energy_per_struct'] / batch['nats']
+            target_epa = batch['energies'] / batch['nats']
+            energy_maes.append(
+                (pred_epa - target_epa).abs().mean().item())
+            force_maes.append(
+                (output['forces'] - batch['forces']).abs().mean().item())
 
     return {
         'energy_mae': np.mean(energy_maes),
@@ -275,29 +433,38 @@ def main():
     print(f"Device: {device}")
 
     # Load data
-    frames = load_dataset(args.data_path)
-
-    # Shuffle and split
-    indices = np.random.permutation(len(frames))
-    n_train = int(args.train_ratio * len(frames))
-    n_val = int(args.val_ratio * len(frames))
-    train_idx = indices[:n_train]
-    val_idx = indices[n_train:n_train + n_val]
-    test_idx = indices[n_train + n_val:]
-
-    print(f"Split: {len(train_idx)} train, {len(val_idx)} val, "
-          f"{len(test_idx)} test")
+    if args.train_file and args.val_file and args.test_file:
+        # Separate train/val/test files
+        train_frames = load_dataset(args.train_file)
+        val_frames = load_dataset(args.val_file)
+        test_frames = load_dataset(args.test_file)
+        print(f"Split: {len(train_frames)} train, {len(val_frames)} val, "
+              f"{len(test_frames)} test")
+    else:
+        # Single file, auto-split
+        frames = load_dataset(args.data_path)
+        indices = np.random.permutation(len(frames))
+        n_train = int(args.train_ratio * len(frames))
+        n_val = int(args.val_ratio * len(frames))
+        train_frames = [frames[i] for i in indices[:n_train]]
+        val_frames = [frames[i] for i in indices[n_train:n_train + n_val]]
+        test_frames = [frames[i] for i in indices[n_train + n_val:]]
+        print(f"Split: {len(train_frames)} train, {len(val_frames)} val, "
+              f"{len(test_frames)} test")
 
     # Pre-build graphs
     print("Building graphs...")
     use_gom = not args.no_gom
-    def _build(i):
-        return build_graph(frames[i], args.radial_cutoff,
+    lseg = 4 if args.orbital == 'sp' else 1
+    gom_input_dim = args.natx * lseg
+
+    def _build(atoms):
+        return build_graph(atoms, args.radial_cutoff,
                            gom_cutoff=args.gom_cutoff, natx=args.natx,
-                           use_gom=use_gom)
-    train_data = [_build(i) for i in train_idx]
-    val_data = [_build(i) for i in val_idx]
-    test_data = [_build(i) for i in test_idx]
+                           use_gom=use_gom, orbital=args.orbital)
+    train_data = [_build(a) for a in train_frames]
+    val_data = [_build(a) for a in val_frames]
+    test_data = [_build(a) for a in test_frames]
 
     # Build model on CPU first (e3nn Gate float64 issue)
     prev_device = torch.get_default_device() if hasattr(torch, 'get_default_device') else None
@@ -312,6 +479,8 @@ def main():
         natx=args.natx,
         energy_hidden=args.energy_hidden,
         use_gom=not args.no_gom,
+        gom_input_dim=gom_input_dim,
+        orbital=args.orbital,
     )
     model = model.to(device)
 
@@ -351,10 +520,12 @@ def main():
         epoch_e_mae = []
         epoch_f_mae = []
 
-        for i, idx in enumerate(perm):
-            batch = train_data[idx]
+        # Mini-batch training
+        for start in range(0, len(perm), args.batch_size):
+            batch_indices = perm[start:start + args.batch_size]
+            graphs = [train_data[i] for i in batch_indices]
             metrics = train_step(
-                model, batch, optimizer,
+                model, graphs, optimizer,
                 args.energy_weight, args.force_weight, args.stress_weight,
                 device
             )
