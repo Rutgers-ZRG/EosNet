@@ -234,6 +234,65 @@ def build_gom_s_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere):
     return gom
 
 
+def build_gom_sp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere):
+    """Build s+p orbital GOMs for all atoms at once — fully batched.
+
+    Args:
+        rxyz_padded: (B, max_n, 3) padded neighbor positions
+        rcov_padded: (B, max_n) padded covalent radii
+        amp_padded: (B, max_n) padded amplitudes (0 for padding)
+        n_sphere: (B,) actual neighbor counts
+
+    Returns:
+        (B, 4*max_n, 4*max_n) batched GOM matrices
+    """
+    B, max_n, _ = rxyz_padded.shape
+
+    # (B, max_n, max_n, 3)
+    d = rxyz_padded[:, :, None, :] - rxyz_padded[:, None, :, :]
+    d2 = (d ** 2).sum(-1)  # (B, max_n, max_n)
+
+    rc_i = rcov_padded[:, :, None]  # (B, max_n, 1)
+    rc_j = rcov_padded[:, None, :]  # (B, 1, max_n)
+
+    denom = (rc_i ** 2 + rc_j ** 2).clamp(min=1e-30)
+    r = 0.5 / denom  # (B, max_n, max_n)
+    amp_ij = amp_padded[:, :, None] * amp_padded[:, None, :]  # (B, max_n, max_n)
+
+    sji = (4.0 * rc_i * rc_j).clamp(min=0.0).sqrt() ** 3 * torch.exp(-d2 * r)
+
+    # s-s: same as build_gom_s_batched
+    ss = (4.0 * r * rc_i * rc_j).clamp(min=0.0).sqrt() ** 3 * torch.exp(-d2 * r) * amp_ij
+
+    # Build 4n x 4n matrix
+    om = rxyz_padded.new_zeros(B, 4 * max_n, 4 * max_n)
+
+    # s-s block
+    om[:, 0::4, 0::4] = ss
+
+    # s-p block
+    stv_sp = (8.0 ** 0.5) * rc_j * r * sji * amp_ij  # (B, max_n, max_n)
+    for k in range(3):
+        om[:, 0::4, (k + 1)::4] = stv_sp * d[:, :, :, k]
+
+    # p-s block
+    stv_ps = -(8.0 ** 0.5) * rc_i * r * sji * amp_ij
+    for k in range(3):
+        om[:, (k + 1)::4, 0::4] = stv_ps * d[:, :, :, k]
+
+    # p-p block
+    stv_pp = -8.0 * rc_i * rc_j * r * r * sji * amp_ij
+    inv_2r = 0.5 / r.clamp(min=1e-30)
+    for k1 in range(3):
+        for k2 in range(3):
+            val = stv_pp * d[:, :, :, k1] * d[:, :, :, k2]
+            if k1 == k2:
+                val = val - stv_pp * inv_2r
+            om[:, (k1 + 1)::4, (k2 + 1)::4] = val
+
+    return om
+
+
 def gom_fp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere, natx):
     """Full pipeline: build GOMs + eigendecompose, all batched.
 
