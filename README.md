@@ -17,7 +17,7 @@ EOSNet provides two backbone architectures:
 | **EOSNet v1** (CGCNN) | Crystal graph convolution | GOM fingerprints + CGCNN message passing |
 | **EOSNet v2** (e3nn) | Equivariant tensor products | GOM fingerprints + e3nn spherical harmonics |
 
-Select with `--model-type cgcnn` (default) or `--model-type e3nn`.
+Select with `--model-type e3nn` (default) or `--model-type cgcnn`.
 
 ## Installation
 
@@ -25,7 +25,7 @@ Select with `--model-type cgcnn` (default) or `--model-type e3nn`.
 
 - Python 3.10+
 - [PyTorch](https://pytorch.org) >= 2.0
-- [e3nn](https://github.com/e3nn/e3nn) (required for v2 model only)
+- [e3nn](https://github.com/e3nn/e3nn)
 
 GOM fingerprints are computed natively in PyTorch (`eosnet/fp/`) — no external C library needed.
 
@@ -38,7 +38,7 @@ conda activate eosnet
 # Install dependencies
 pip install numpy scipy ase scikit-learn pymatgen
 pip install torch torchvision
-pip install e3nn  # for v2 model
+pip install e3nn
 ```
 
 ## Data Format
@@ -70,15 +70,14 @@ Use `convert_to_extxyz.py` to convert POSCAR directories to extended XYZ.
 ## Training
 
 ```bash
-# Train with CGCNN backbone (v1)
+# Train with e3nn backbone (default)
 python train.py root_dir
 
-# Train with e3nn backbone (v2)
-python train.py root_dir --model-type e3nn
+# Train with CGCNN backbone (v1)
+python train.py root_dir --model-type cgcnn
 
 # Full example with recommended settings
 python train.py root_dir \
-    --model-type e3nn \
     --task regression \
     --epochs 500 \
     --batch-size 64 \
@@ -98,7 +97,7 @@ python train.py root_dir \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model-type` | `cgcnn` | Model backbone: `cgcnn` or `e3nn` |
+| `--model-type` | `e3nn` | Model backbone: `e3nn` or `cgcnn` |
 | `--task` | `regression` | `regression` or `classification` |
 | `--epochs` | `200` | Number of training epochs |
 | `--batch-size` | `64` | Mini-batch size |
@@ -202,4 +201,4 @@ CGCNN framework:
 
 ## License
 
-This project is built on the [CGCNN](https://github.com/txie-93/cgcnn) framework by Tian Xie.
+The v1 (CGCNN) backbone is based on the [CGCNN](https://github.com/txie-93/cgcnn) framework by Tian Xie.
