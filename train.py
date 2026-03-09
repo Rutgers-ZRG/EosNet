@@ -120,9 +120,9 @@ parser.add_argument('--n-conv', default=3, type=int, metavar='N',
                     help='number of conv layers')
 parser.add_argument('--n-h', default=1, type=int, metavar='N',
                     help='number of hidden layers after pooling')
-parser.add_argument('--model-type', default='cgcnn', type=str,
+parser.add_argument('--model-type', default='e3nn', type=str,
                     choices=['cgcnn', 'e3nn'],
-                    help='Model backbone type: cgcnn (original) or e3nn (v2)')
+                    help='Model backbone type: e3nn (default, v2) or cgcnn (v1)')
 parser.add_argument('--irreps-hidden', default='32x0e+16x1o+8x2e', type=str,
                     help='Hidden irreps for e3nn model (default: 32x0e+16x1o+8x2e)')
 parser.add_argument('--max-ell', default=2, type=int,
