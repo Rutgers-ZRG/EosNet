@@ -24,9 +24,10 @@ Select with `--model-type cgcnn` (default) or `--model-type e3nn`.
 ### Prerequisites
 
 - Python 3.10+
-- [libfp](https://github.com/Rutgers-ZRG/libfp) (C implementation of GOM fingerprints)
 - [PyTorch](https://pytorch.org) >= 2.0
 - [e3nn](https://github.com/e3nn/e3nn) (required for v2 model only)
+
+GOM fingerprints are computed natively in PyTorch (`eosnet/fp/`) — no external C library needed.
 
 ### Setup
 
@@ -34,34 +35,11 @@ Select with `--model-type cgcnn` (default) or `--model-type e3nn`.
 conda create -n eosnet python=3.10 pip
 conda activate eosnet
 
-# Install libfp (GOM fingerprint library)
-git clone https://github.com/Tack-Tau/fplib.git
-cd fplib && git checkout fplib_3.1.2
-pip install .
-cd ..
-
 # Install dependencies
 pip install numpy scipy ase scikit-learn pymatgen
 pip install torch torchvision
 pip install e3nn  # for v2 model
 ```
-
-<details>
-<summary>libfp LAPACK troubleshooting (macOS)</summary>
-
-If using conda LAPACK:
-```bash
-export DYLD_LIBRARY_PATH="$CONDA_PREFIX/lib:$DYLD_LIBRARY_PATH"
-```
-
-If using Homebrew OpenBLAS:
-```bash
-export CFLAGS="-I/opt/homebrew/opt/openblas/include $CFLAGS"
-export LDFLAGS="-L/opt/homebrew/opt/openblas/lib $LDFLAGS"
-```
-
-You may also need to edit `fplib/setup.py` to point to your LAPACK installation.
-</details>
 
 ## Data Format
 

@@ -98,17 +98,14 @@ def get_lfp_fast(cell, cutoff=4.0, orbital='s', natx=300,
     Args:
         cell: tuple (lat, rxyz, types, znucl)
         cutoff: cutoff radius
-        orbital: 's' only (sp not yet supported in fast path)
+        orbital: 's' for s-only, 'sp' for s+p orbitals
         natx: fingerprint dimension
         device: torch device ('cuda', 'cpu', 'mps')
         dtype: torch dtype
 
     Returns:
-        Tensor (nat, natx) fingerprints
+        Tensor (nat, natx) for s-only, (nat, 4*natx) for s+p
     """
-    if orbital != 's':
-        raise NotImplementedError("Fast path only supports orbital='s' for now")
-
     lat, rxyz, types, znucl = cell
     lat = _to_tensor(lat, dtype, device)
     rxyz = _to_tensor(rxyz, dtype, device)
@@ -120,7 +117,8 @@ def get_lfp_fast(cell, cutoff=4.0, orbital='s', natx=300,
         lat, rxyz, types_t, znucl_t, cutoff, natx=natx, dtype=dtype, device=device)
 
     # Batched GOM + eigh
-    result = gom_fp_batched(rxyz_pad, rcov_pad, amp_pad, n_sph, natx)
+    result = gom_fp_batched(rxyz_pad, rcov_pad, amp_pad, n_sph, natx,
+                            orbital=orbital)
 
     return result
 
