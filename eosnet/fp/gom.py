@@ -293,7 +293,8 @@ def build_gom_sp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere):
     return om
 
 
-def gom_fp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere, natx):
+def gom_fp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere, natx,
+                   orbital='s'):
     """Full pipeline: build GOMs + eigendecompose, all batched.
 
     Args:
@@ -302,31 +303,39 @@ def gom_fp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere, natx):
         amp_padded: (B, max_n) padded amplitudes
         n_sphere: (B,) neighbor counts
         natx: output fingerprint dim
+        orbital: 's' for s-only, 'sp' for s+p orbitals
 
     Returns:
-        (B, natx) fingerprint eigenvalues, descending
+        (B, natx) for s-only, (B, 4*natx) for s+p — eigenvalues, descending
     """
-    goms = build_gom_s_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere)
+    if orbital == 'sp':
+        lseg = 4
+        goms = build_gom_sp_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere)
+    else:
+        lseg = 1
+        goms = build_gom_s_batched(rxyz_padded, rcov_padded, amp_padded, n_sphere)
+
+    fp_dim = natx * lseg
 
     # Batched eigendecomposition
-    eigvals = _eigvalsh_batched_adaptive(goms)  # (B, max_n), ascending
+    eigvals = _eigvalsh_batched_adaptive(goms)  # ascending
 
     # Descending
     eigvals = eigvals.flip(-1)
 
-    max_n = goms.shape[1]
-    # Trim/pad to natx
-    if max_n >= natx:
-        result = eigvals[:, :natx].contiguous()
+    mat_n = goms.shape[1]
+    # Trim/pad to fp_dim
+    if mat_n >= fp_dim:
+        result = eigvals[:, :fp_dim].contiguous()
     else:
-        pad = torch.zeros(eigvals.shape[0], natx - max_n,
+        pad = torch.zeros(eigvals.shape[0], fp_dim - mat_n,
                           device=eigvals.device, dtype=eigvals.dtype)
         result = torch.cat([eigvals, pad], dim=1)
 
     # Zero out padding artifacts without Python/device sync loops.
-    # Keep entries j < n_sphere[i], zero the rest.
-    keep_counts = n_sphere.clamp(max=natx).to(result.device)
-    cols = torch.arange(natx, device=result.device).unsqueeze(0)
+    # Keep entries j < n_sphere[i] * lseg, zero the rest.
+    keep_counts = (n_sphere.clamp(max=natx) * lseg).to(result.device)
+    cols = torch.arange(fp_dim, device=result.device).unsqueeze(0)
     keep_mask = cols < keep_counts.unsqueeze(1)
     result = result * keep_mask.to(result.dtype)
 

@@ -11,15 +11,7 @@ from math import comb
 from functools import reduce, lru_cache
 
 import numpy as np
-try:
-    import torch_fplib
-    _USE_TORCH_FPLIB = True
-except ImportError:
-    _USE_TORCH_FPLIB = False
-    try:
-        import libfp as fplib
-    except ImportError:
-        import fplib
+import eosnet.fp as torch_fplib
 from ase.io import read as ase_read
 from ase.neighborlist import neighbor_list
 from ase import Atoms
@@ -573,7 +565,7 @@ class StructData(Dataset):
             raise NotImplementedError(
                 'save_to_disk is not yet supported for e3nn model_type. '
                 'Use in-memory caching (save_to_disk=False) instead.')
-        assert lmax == 0, 'p-orbitals is not supported at this time!'
+        # lmax=0 for s-only, lmax>0 for s+p orbitals
         assert nx >= comb(max_num_nbr, 2), 'nx is too small for the given max_num_nbr!'
         self.batch_size = batch_size
         self.drop_last = drop_last
@@ -633,7 +625,7 @@ class StructData(Dataset):
         return ase_read(cell_file)
 
     def _precompute_fingerprints(self):
-        """Batch-compute all GOM fingerprints using torch_fplib."""
+        """Batch-compute all GOM fingerprints."""
         import time
         cutoff = np.float64(int(np.sqrt(self.radius)) * 3)
         natx = int(self.nx)
@@ -669,7 +661,7 @@ class StructData(Dataset):
             atoms_or_file: ASE Atoms object (preferred) or path to .vasp file
             struct_id: cache key (derived from filename if not given)
             ase_neighbors: optional (i_idx, j_idx, D_vec) from ASE neighbor_list
-                           to avoid redundant neighbor search in torch_fplib
+                           to avoid redundant neighbor search
         """
         # Determine cache key
         if struct_id is not None:
@@ -704,20 +696,16 @@ class StructData(Dataset):
             print(f"Structure {struct_id or 'unknown'} is erroneous!")
             fp = np.zeros((len(rxyz), lseg * natx), dtype=np.float64)
         else:
-            if (_USE_TORCH_FPLIB and ase_neighbors is not None
-                    and cutoff <= self.radius):
+            if (ase_neighbors is not None and cutoff <= self.radius):
                 # Fast path: reuse ASE neighbor list, skip redundant search
                 i_idx, j_idx, D_vec = ase_neighbors
                 fp = torch_fplib.get_lfp_from_ase_neighbors(
                     rxyz, atoms_or_file.numbers, i_idx, j_idx, D_vec,
                     cutoff=cutoff, natx=natx, device='cpu').numpy()
-            elif _USE_TORCH_FPLIB:
+            else:
                 fp = torch_fplib.get_lfp_fast(
                     cell, cutoff=cutoff, natx=natx,
                     orbital=orbital, device='cpu').numpy()
-            else:
-                fp = fplib.get_lfp(cell, cutoff=cutoff, natx=natx,
-                                   log=False, orbital=orbital)
 
         if cache_key:
             self._fp_cache[cache_key] = fp
@@ -732,9 +720,10 @@ class StructData(Dataset):
             one_hot[i, z] = 1
 
         comb_n_nbr = comb(self.max_num_nbr, 2)
+        lseg = 4 if self.lmax > 0 else 1
         fp_mat = self.get_fp_mat(atoms, struct_id=struct_id,
                                  ase_neighbors=ase_neighbors)
-        fp_mat = fp_mat[:, :comb_n_nbr]
+        fp_mat = fp_mat[:, :lseg * comb_n_nbr]
         fp_mat[np.abs(fp_mat) < 1.0e-10] = 0.0
         norms = np.linalg.norm(fp_mat, axis=-1, keepdims=True)
         norms = np.where(norms < 1e-30, 1.0, norms)
