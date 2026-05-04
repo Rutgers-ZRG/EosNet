@@ -129,6 +129,8 @@ parser.add_argument('--max-ell', default=2, type=int,
                     help='Max spherical harmonic order for e3nn (default: 2)')
 parser.add_argument('--num-radial-basis', default=16, type=int,
                     help='Number of radial basis functions for e3nn (default: 16)')
+parser.add_argument('--no-gom', action='store_true',
+                    help='Disable GOM fingerprint features (use one-hot only)')
 parser.add_argument('--data-format', default='auto',
                     choices=['auto', 'extxyz', 'vasp'],
                     help='Data format: auto (detect), extxyz, or vasp (default: auto)')
@@ -231,6 +233,7 @@ def main():
         model_type=args.model_type,
         data_format=data_format,
         atoms_dict=shared_atoms_dict,
+        no_gom=args.no_gom,
     )
 
     # Get feature dimensions from the first structure
@@ -377,6 +380,7 @@ def main():
         model_type=args.model_type,
         data_format=data_format,
         atoms_dict=shared_atoms_dict,
+        no_gom=args.no_gom,
     )
     train_struct_dataset = StructData(
         id_prop_data=[(sid, target) for sid, target in id_train_loader.dataset.id_prop_data],

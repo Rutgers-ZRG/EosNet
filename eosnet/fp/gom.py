@@ -8,10 +8,10 @@ Reference: Zhu et al., J. Chem. Phys. 144, 034203 (2016)
 
 import torch
 
-# For tiny batched matrices on CUDA (common in 32-atom cells),
-# cuSOLVER eigendecomposition launch overhead can dominate runtime.
-CUDA_EIG_CPU_FALLBACK_MAX_N = 64
-CUDA_EIG_CPU_FALLBACK_MAX_BATCH = 256
+# cuSOLVER batched eigensolver threshold: fast for n <= ~32, slow above.
+# Benchmark on L40S (Apr 2026): 20x20 GPU 34x faster than CPU fallback,
+# 40x40 GPU 16x slower.  32 is a safe threshold.
+CUDA_EIG_GPU_MAX_N = 32
 
 
 def _eigh_safe(mat):
@@ -31,16 +31,23 @@ def _eigvalsh_safe(mat):
 
 
 def _eigvalsh_batched_adaptive(mats: torch.Tensor) -> torch.Tensor:
-    """Batched eigenvalues with adaptive backend for small CUDA problems."""
+    """Batched eigenvalues with adaptive backend.
+
+    For CUDA: cuSOLVER batched eigensolver is fast for small matrices
+    (n <= ~32) but catastrophically slow for larger ones.  We stay on
+    GPU when n <= CUDA_EIG_GPU_MAX_N (fast path) and fall back to CPU
+    LAPACK otherwise.
+    """
     if mats.device.type == 'mps':
         return torch.linalg.eigvalsh(mats.cpu()).to(mats.device)
 
     if mats.device.type == 'cuda':
-        batch, n, _ = mats.shape
-        if (
-            n <= CUDA_EIG_CPU_FALLBACK_MAX_N
-            and batch <= CUDA_EIG_CPU_FALLBACK_MAX_BATCH
-        ):
+        _, n, _ = mats.shape
+        if n <= CUDA_EIG_GPU_MAX_N:
+            # Small matrices: GPU batched eigensolver is efficient
+            return torch.linalg.eigvalsh(mats)
+        else:
+            # Large matrices: cuSOLVER is very slow, CPU LAPACK wins
             return torch.linalg.eigvalsh(mats.cpu()).to(mats.device)
 
     return torch.linalg.eigvalsh(mats)

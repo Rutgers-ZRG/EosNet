@@ -16,7 +16,7 @@ from .cutoff import cutoff_amplitude, NC
 from .neighbors import get_ixyz, find_neighbors, find_neighbors_vectorized
 from .gom import (build_gom_s, build_gom_sp, gom_eigenvalues,
                   gom_eigenvalues_batched, gom_fp_batched,
-                  CUDA_EIG_CPU_FALLBACK_MAX_BATCH)
+                  CUDA_EIG_GPU_MAX_N)
 
 __version__ = "0.1.0"
 
@@ -268,7 +268,7 @@ def get_lfp_fast_batch(cells, cutoff=4.0, natx=300,
     target_device = torch.device(device) if device is not None else torch.device('cpu')
     effective_chunk_size = chunk_size
     if effective_chunk_size <= 0 and target_device.type == 'cuda':
-        effective_chunk_size = CUDA_EIG_CPU_FALLBACK_MAX_BATCH
+        effective_chunk_size = 256  # default chunk size for batched GPU eigvalsh
 
     if effective_chunk_size <= 0 or effective_chunk_size >= total_atoms:
         # All at once
@@ -354,7 +354,7 @@ def get_lfp_from_ase_neighbors(positions, atomic_numbers,
     d2_filt = d2_all[within]
 
     # Covalent radii
-    rcov_all = get_rcov(torch.tensor(atomic_numbers), dtype=dtype).numpy()
+    rcov_all = get_rcov(torch.tensor(atomic_numbers, device='cpu'), dtype=dtype).numpy()
 
     # Count neighbors per atom (+1 for self)
     nbr_counts = np.bincount(i_filt, minlength=nat)

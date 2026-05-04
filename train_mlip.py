@@ -35,7 +35,7 @@ def parse_args():
                         help='Weight for stress loss (0 to disable)')
     parser.add_argument('--radial-cutoff', type=float, default=5.0)
     parser.add_argument('--gom-cutoff', type=float, default=6.0)
-    parser.add_argument('--natx', type=int, default=64,
+    parser.add_argument('--natx', type=int, default=32,
                         help='Max GOM neighbors per atom')
     parser.add_argument('--n-gom-features', type=int, default=32)
     parser.add_argument('--no-gom', action='store_true',
@@ -66,6 +66,8 @@ def parse_args():
                         help='Path to checkpoint to resume from')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--disable-cuda', action='store_true')
+    parser.add_argument('--use-cuequivariance', action='store_true',
+                        help='Use cuequivariance fused CUDA kernels (3x speed, 2x memory)')
     return parser.parse_args()
 
 
@@ -236,6 +238,8 @@ def collate_batch(graphs, device):
     all_gom_n_sphere = []
     all_gom_self_rcov = []
     has_gom_data = False
+    all_stresses = []
+    has_stress = False
 
     atom_offset = 0
     for i, g in enumerate(graphs):
@@ -246,6 +250,19 @@ def collate_batch(graphs, device):
         all_energies.append(g['energy'])
         all_nats.append(nat)
         all_batch_idx.append(torch.full((nat,), i, dtype=torch.long))
+
+        # Stress (Voigt 6-component)
+        if g.get('stress') is not None:
+            s = g['stress']
+            if s.numel() == 9:
+                # 3x3 matrix → Voigt: xx, yy, zz, yz, xz, xy
+                s3 = s.reshape(3, 3)
+                s = torch.stack([s3[0,0], s3[1,1], s3[2,2],
+                                 s3[1,2], s3[0,2], s3[0,1]])
+            all_stresses.append(s)
+            has_stress = True
+        else:
+            all_stresses.append(torch.zeros(6, dtype=torch.float32))
 
         # Offset edge indices
         src, dst = g['edge_index']
@@ -324,13 +341,21 @@ def collate_batch(graphs, device):
             'self_rcov': torch.cat(all_gom_self_rcov).to(device),
         }
 
+    stresses = None
+    if has_stress:
+        stresses = torch.stack(all_stresses).to(device)  # (B, 6)
+
+    edge_shifts_cat = torch.cat(all_edge_shifts).to(device)
+
     return {
         'positions': positions,
         'atomic_numbers': atomic_numbers,
         'edge_index': edge_index,
         'edge_vec': edge_vec,
+        'edge_shifts': edge_shifts_cat,
         'forces': forces,
         'energies': energies,
+        'stresses': stresses,
         'batch_idx': batch_idx,
         'nats': nats,
         'gom_data': gom_data,
@@ -345,16 +370,18 @@ def train_step(model, graphs, optimizer, energy_w, force_w, stress_w, device):
     optimizer.zero_grad()
 
     batch = collate_batch(graphs, device)
+    use_stress = stress_w > 0
 
     output = model(
         batch['atomic_numbers'], batch['positions'], None,
         batch['edge_index'], batch['edge_vec'],
         compute_forces=True,
-        compute_stress=False,
+        compute_stress=use_stress,
         batch_idx=batch['batch_idx'],
         n_structures=batch['n_structures'],
         gom_data=batch['gom_data'],
         cells=batch['cells'],
+        edge_shifts=batch.get('edge_shifts'),
     )
 
     # Energy loss: per-atom MSE averaged over structures
@@ -366,6 +393,16 @@ def train_step(model, graphs, optimizer, energy_w, force_w, stress_w, device):
     force_loss = ((output['forces'] - batch['forces']) ** 2).mean()
 
     loss = energy_w * energy_loss + force_w * force_loss
+
+    # Stress loss
+    stress_mae = 0.0
+    if use_stress and 'stress' in output and batch.get('stresses') is not None:
+        pred_stress = output['stress']  # (B, 6) Voigt
+        target_stress = batch['stresses']  # (B, 6) Voigt
+        stress_loss = ((pred_stress - target_stress) ** 2).mean()
+        loss = loss + stress_w * stress_loss
+        with torch.no_grad():
+            stress_mae = (pred_stress - target_stress).abs().mean().item()
 
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
@@ -379,14 +416,16 @@ def train_step(model, graphs, optimizer, energy_w, force_w, stress_w, device):
         'loss': loss.item(),
         'energy_mae': energy_mae,
         'force_mae': force_mae,
+        'stress_mae': stress_mae,
     }
 
 
-def validate(model, val_data, device, batch_size=32):
+def validate(model, val_data, device, batch_size=32, compute_stress=False):
     """Validate on a dataset using mini-batches."""
     model.eval()
     energy_maes = []
     force_maes = []
+    stress_maes = []
 
     for start in range(0, len(val_data), batch_size):
         graphs = val_data[start:start + batch_size]
@@ -397,11 +436,12 @@ def validate(model, val_data, device, batch_size=32):
                 batch['atomic_numbers'], batch['positions'], None,
                 batch['edge_index'], batch['edge_vec'],
                 compute_forces=True,
-                compute_stress=False,
+                compute_stress=compute_stress,
                 batch_idx=batch['batch_idx'],
                 n_structures=batch['n_structures'],
                 gom_data=batch['gom_data'],
                 cells=batch['cells'],
+                edge_shifts=batch.get('edge_shifts'),
             )
 
         with torch.no_grad():
@@ -411,11 +451,17 @@ def validate(model, val_data, device, batch_size=32):
                 (pred_epa - target_epa).abs().mean().item())
             force_maes.append(
                 (output['forces'] - batch['forces']).abs().mean().item())
+            if compute_stress and 'stress' in output and batch.get('stresses') is not None:
+                stress_maes.append(
+                    (output['stress'] - batch['stresses']).abs().mean().item())
 
-    return {
+    result = {
         'energy_mae': np.mean(energy_maes),
         'force_mae': np.mean(force_maes),
     }
+    if stress_maes:
+        result['stress_mae'] = np.mean(stress_maes)
+    return result
 
 
 def main():
@@ -481,6 +527,7 @@ def main():
         use_gom=not args.no_gom,
         gom_input_dim=gom_input_dim,
         orbital=args.orbital,
+        use_cuequivariance=args.use_cuequivariance,
     )
     model = model.to(device)
 
@@ -500,7 +547,7 @@ def main():
     best_val_mae = float('inf')
     if args.resume and os.path.isfile(args.resume):
         print(f"Resuming from {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
         start_epoch = ckpt['epoch']
@@ -534,20 +581,24 @@ def main():
             epoch_f_mae.append(metrics['force_mae'])
 
         # Validation
-        val_metrics = validate(model, val_data, device)
+        use_stress = args.stress_weight > 0
+        val_metrics = validate(model, val_data, device, compute_stress=use_stress)
         scheduler.step(val_metrics['force_mae'])
 
         dt = time.time() - t0
         lr = optimizer.param_groups[0]['lr']
 
         if (epoch + 1) % args.print_freq == 0 or epoch == 0:
-            print(f"Epoch {epoch+1:4d} | "
-                  f"loss {np.mean(epoch_losses):.4f} | "
-                  f"E_MAE {np.mean(epoch_e_mae)*1000:.1f} meV | "
-                  f"F_MAE {np.mean(epoch_f_mae)*1000:.1f} meV/Å | "
-                  f"val_E {val_metrics['energy_mae']*1000:.1f} meV | "
-                  f"val_F {val_metrics['force_mae']*1000:.1f} meV/Å | "
-                  f"lr {lr:.1e} | {dt:.1f}s")
+            msg = (f"Epoch {epoch+1:4d} | "
+                   f"loss {np.mean(epoch_losses):.4f} | "
+                   f"E_MAE {np.mean(epoch_e_mae)*1000:.1f} meV | "
+                   f"F_MAE {np.mean(epoch_f_mae)*1000:.1f} meV/Å | "
+                   f"val_E {val_metrics['energy_mae']*1000:.1f} meV | "
+                   f"val_F {val_metrics['force_mae']*1000:.1f} meV/Å")
+            if 'stress_mae' in val_metrics:
+                msg += f" | val_S {val_metrics['stress_mae']*1000:.1f} meV/ų"
+            msg += f" | lr {lr:.1e} | {dt:.1f}s"
+            print(msg)
 
         # Save best
         is_best = val_metrics['force_mae'] < best_val_mae
@@ -581,11 +632,14 @@ def main():
     # Test
     print("\n--- Test Set Evaluation ---")
     best_ckpt = torch.load(os.path.join(args.save_dir, 'mlip_best.pth'),
-                            map_location=device)
+                            map_location=device, weights_only=False)
     model.load_state_dict(best_ckpt['model'])
-    test_metrics = validate(model, test_data, device)
+    test_metrics = validate(model, test_data, device,
+                            compute_stress=args.stress_weight > 0)
     print(f"Test E_MAE: {test_metrics['energy_mae']*1000:.1f} meV/atom")
     print(f"Test F_MAE: {test_metrics['force_mae']*1000:.1f} meV/Å")
+    if 'stress_mae' in test_metrics:
+        print(f"Test S_MAE: {test_metrics['stress_mae']*1000:.1f} meV/ų")
 
     # Save test results
     results = {

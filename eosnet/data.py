@@ -553,13 +553,15 @@ class StructData(Dataset):
                  save_to_disk=False,
                  model_type='cgcnn',
                  data_format='auto',
-                 atoms_dict=None):
+                 atoms_dict=None,
+                 no_gom=False):
         self.root_dir = root_dir
         self.id_prop_data = id_prop_data
         self.max_num_nbr, self.radius = max_num_nbr, radius
         self.model_type = model_type
         self.nx = nx
         self.lmax = lmax
+        self.no_gom = no_gom
         self.save_to_disk = save_to_disk
         if save_to_disk and model_type == 'e3nn':
             raise NotImplementedError(
@@ -718,6 +720,9 @@ class StructData(Dataset):
         one_hot = np.zeros((len(atoms), max_atomic_number + 1), dtype=np.int32)
         for i, z in enumerate(chem_nums):
             one_hot[i, z] = 1
+
+        if self.no_gom:
+            return one_hot.astype(np.float32)
 
         comb_n_nbr = comb(self.max_num_nbr, 2)
         lseg = 4 if self.lmax > 0 else 1
